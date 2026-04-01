@@ -59,6 +59,12 @@ from aws_cdk import (
 from aws_cdk import (
     aws_secretsmanager as secretsmanager,
 )
+from aws_cdk import (
+    aws_sns as sns,
+)
+from aws_cdk import (
+    aws_sns_subscriptions as sns_subs,
+)
 from constructs import Construct
 
 
@@ -557,6 +563,89 @@ class ModelRouterStack(Stack):
                     width=12,
                 ),
             )
+
+        # -----------------------------------------------------------------
+        # CloudWatch Alarms
+        # -----------------------------------------------------------------
+        alarm_email = self.node.try_get_context("alarm_email")
+        alarm_actions = []
+        if alarm_email:
+            alarm_topic = sns.Topic(
+                self,
+                "AlarmTopic",
+                topic_name=f"{prefix}-alarms",
+                display_name="Quick Suite Model Router Alarms",
+            )
+            alarm_topic.add_subscription(sns_subs.EmailSubscription(alarm_email))
+            alarm_actions = [cw.SnsAction(alarm_topic)]
+
+        # Alarm 1 — p99 latency > 5 s on the router Lambda
+        cw.Alarm(
+            self,
+            "LatencyAlarm",
+            alarm_name=f"{prefix}-latency-p99",
+            alarm_description="Router Lambda p99 latency exceeded 5 seconds",
+            metric=router_fn.metric_duration(
+                period=Duration.minutes(5),
+                statistic="p99",
+            ),
+            threshold=5000,
+            evaluation_periods=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_actions=alarm_actions,
+        )
+
+        # Alarm 2 — error rate > 5 %  (errors / invocations * 100)
+        error_rate_metric = cw.MathExpression(
+            expression="100 * errors / MAX([errors, invocations])",
+            using_metrics={
+                "errors": router_fn.metric_errors(period=Duration.minutes(5)),
+                "invocations": router_fn.metric_invocations(period=Duration.minutes(5)),
+            },
+            label="Router error rate %",
+            period=Duration.minutes(5),
+        )
+        cw.Alarm(
+            self,
+            "ErrorRateAlarm",
+            alarm_name=f"{prefix}-error-rate",
+            alarm_description="Router Lambda error rate exceeded 5 %",
+            metric=error_rate_metric,
+            threshold=5,
+            evaluation_periods=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_actions=alarm_actions,
+        )
+
+        # Alarm 3 — fallback rate > 20 %
+        fallback_rate_metric = cw.MathExpression(
+            expression="100 * fallbacks / MAX([fallbacks, invocations])",
+            using_metrics={
+                "fallbacks": cw.Metric(
+                    namespace="QuickSuiteModelRouter",
+                    metric_name="FallbackInvoked",
+                    period=Duration.minutes(5),
+                    statistic="Sum",
+                ),
+                "invocations": router_fn.metric_invocations(period=Duration.minutes(5)),
+            },
+            label="Fallback rate %",
+            period=Duration.minutes(5),
+        )
+        cw.Alarm(
+            self,
+            "FallbackRateAlarm",
+            alarm_name=f"{prefix}-fallback-rate",
+            alarm_description="Provider fallback rate exceeded 20 % of router invocations",
+            metric=fallback_rate_metric,
+            threshold=20,
+            evaluation_periods=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
+            alarm_actions=alarm_actions,
+        )
 
         # -----------------------------------------------------------------
         # Outputs

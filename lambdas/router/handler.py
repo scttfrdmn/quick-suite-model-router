@@ -32,6 +32,33 @@ lambda_client = boto3.client(
     config=Config(read_timeout=25, connect_timeout=5),
 )
 secrets_client = boto3.client("secretsmanager")
+_cw_client = None
+
+
+def _get_cw():
+    global _cw_client
+    if not _cw_client:
+        _cw_client = boto3.client("cloudwatch")
+    return _cw_client
+
+
+def _emit_event(metric_name: str, tool: str, provider: str = ""):
+    """Emit a simple counter event metric to CloudWatch."""
+    try:
+        dims = [{"Name": "Tool", "Value": tool}]
+        if provider:
+            dims.append({"Name": "Provider", "Value": provider})
+        _get_cw().put_metric_data(
+            Namespace="QuickSuiteModelRouter",
+            MetricData=[{
+                "MetricName": metric_name,
+                "Dimensions": dims,
+                "Value": 1,
+                "Unit": "Count",
+            }],
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit event metric {metric_name}: {e}")
 
 ROUTING_CONFIG = json.loads(os.environ.get("ROUTING_CONFIG", "{}"))
 PROVIDER_FUNCTIONS = json.loads(os.environ.get("PROVIDER_FUNCTIONS", "{}"))
@@ -114,8 +141,10 @@ def handle_tool_invocation(event):
 
     system_prompt = _system_prompt(tool)
 
+    department = str(body.get("department") or "").strip()
+
     # Select provider
-    provider_key, model_id = select_provider(tool, body.get("provider"))
+    provider_key, model_id = select_provider(tool, body.get("provider"), department)
     if not provider_key:
         return _resp(503, {"error": "No providers available", "tool": tool})
 
@@ -166,7 +195,7 @@ def handle_tool_invocation(event):
 
         if "errorMessage" in payload or payload.get("error"):
             logger.error(f"Provider error: {payload.get('errorMessage') or payload.get('error')}")
-            return _fallback(tool, provider_key, request_payload, payload)
+            return _fallback(tool, provider_key, request_payload, payload, department)
 
         payload["latency_ms"] = latency
         payload["cached"] = False
@@ -191,7 +220,7 @@ def handle_tool_invocation(event):
     except Exception as e:
         logger.error(f"Failed to invoke {provider_key}: {e}")
         return _fallback(
-            tool, provider_key, request_payload, {"error": str(e)}
+            tool, provider_key, request_payload, {"error": str(e)}, department
         )
 
 
@@ -199,11 +228,19 @@ def handle_tool_invocation(event):
 # Provider selection + fallback
 # ------------------------------------------------------------------
 
-def select_provider(tool: str, explicit: str = None) -> tuple:
-    available = get_available_providers()
+def _preferred_for(tool: str, department: str = "") -> list:
+    """Return the preferred provider list for a tool, respecting department overrides."""
     routing = ROUTING_CONFIG.get("routing", {})
-    tool_cfg = routing.get(tool, routing.get("analyze", {}))
-    preferred = tool_cfg.get("preferred", [])
+    if department:
+        dept_cfg = ROUTING_CONFIG.get("department_overrides", {}).get(department, {})
+        if tool in dept_cfg:
+            return dept_cfg[tool].get("preferred", [])
+    return routing.get(tool, routing.get("analyze", {})).get("preferred", [])
+
+
+def select_provider(tool: str, explicit: str = None, department: str = "") -> tuple:
+    available = get_available_providers()
+    preferred = _preferred_for(tool, department)
 
     if explicit:
         for entry in preferred:
@@ -221,15 +258,15 @@ def select_provider(tool: str, explicit: str = None) -> tuple:
     logger.warning(json.dumps({
         "select_provider_exhausted": True,
         "tool": tool,
+        "department": department,
         "available": list(available),
         "preferred": preferred,
     }))
     return None, None
 
 
-def _fallback(tool, failed, request_payload, error_payload):
-    routing = ROUTING_CONFIG.get("routing", {})
-    preferred = routing.get(tool, {}).get("preferred", [])
+def _fallback(tool, failed, request_payload, error_payload, department: str = ""):
+    preferred = _preferred_for(tool, department)
     available = get_available_providers()
 
     past_failed = False
@@ -247,6 +284,7 @@ def _fallback(tool, failed, request_payload, error_payload):
                 continue
             try:
                 logger.info(f"Falling back → {pk}/{mid}")
+                _emit_event("FallbackInvoked", tool, failed)
                 request_payload["model"] = mid
                 fb_start = time.time()
                 resp = lambda_client.invoke(
@@ -275,6 +313,7 @@ def _fallback(tool, failed, request_payload, error_payload):
             except Exception as e:
                 logger.error(f"Fallback to {pk} also failed: {e}")
 
+    _emit_event("AllProvidersFailed", tool)
     last_error_msg = (
         error_payload.get("error", "unknown")
         if isinstance(error_payload, dict)

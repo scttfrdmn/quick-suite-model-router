@@ -68,3 +68,39 @@ routing:
 defaults:
   max_tokens: 4096
   temperature: 0.7
+
+# Per-department routing overrides (optional)
+#
+# Add a "department" field to your request body to activate an override:
+#   {"prompt": "...", "department": "openai-only", "tool": "analyze"}
+#
+# If the department key is not found, global routing is used as fallback.
+# Only tools listed here are overridden; unlisted tools fall back to global.
+
+department_overrides:
+
+  # Example: force all tools to OpenAI (e.g., university OpenAI site license dept)
+  openai-only:
+    analyze:
+      preferred: [openai/gpt-4o]
+    generate:
+      preferred: [openai/gpt-4o]
+    research:
+      preferred: [openai/o3]
+    summarize:
+      preferred: [openai/gpt-4o-mini]
+    code:
+      preferred: [openai/gpt-4o]
+
+  # Example: Bedrock-only for compliance-sensitive departments
+  bedrock-only:
+    analyze:
+      preferred: [bedrock/anthropic.claude-sonnet-4-20250514-v1:0]
+    generate:
+      preferred: [bedrock/anthropic.claude-sonnet-4-20250514-v1:0]
+    research:
+      preferred: [bedrock/anthropic.claude-sonnet-4-20250514-v1:0]
+    summarize:
+      preferred: [bedrock/amazon.nova-pro-v1:0]
+    code:
+      preferred: [bedrock/anthropic.claude-sonnet-4-20250514-v1:0]

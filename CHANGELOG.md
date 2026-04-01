@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-01
+
+### Added
+- Per-department routing overrides: `department` field in request body selects an alternate provider preference list from the new `department_overrides` section in `routing_config.yaml`; example overrides for `openai-only` and `bedrock-only` departments included in `config/routing_config.example.yaml`
+- CloudWatch alarms: LatencyAlarm (p99 latency > 5 s), ErrorRateAlarm (error rate > 5%), FallbackRateAlarm (fallback rate > 20%); optional SNS email topic via `alarm_email` CDK context variable
+- `FallbackInvoked` and `AllProvidersFailed` CloudWatch metrics emitted from router Lambda for alarm and dashboard visibility
+- Integration test suite (`tests/test_integration_bedrock.py`) covering Bedrock provider success, guardrail-blocked responses, error handling, and full router→Bedrock chain using Substrate
+- cfn-lint step in CI workflow validates synthesised CloudFormation template on every push and pull request
+
 ## [0.2.0] - 2026-04-01
 
 ### Added
@@ -31,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Secrets Manager integration for external provider API keys (no env-var key storage)
 - CDK stack with full infrastructure-as-code deployment (Cognito, API Gateway, Lambdas, DynamoDB, Guardrail, CloudWatch dashboard)
 
-[unreleased]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.2.0...HEAD
+[unreleased]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/scttfrdmn/quick-suite-model-router/releases/tag/v0.1.0
