@@ -283,6 +283,7 @@ class ModelRouterStack(Stack):
             role=bedrock_role,
             timeout=Duration.seconds(120),
             memory_size=512,
+            tracing=lambda_.Tracing.ACTIVE,
             environment={
                 "GUARDRAIL_ID": guardrail.attr_guardrail_id,
                 "GUARDRAIL_VERSION": guardrail_version,
@@ -302,6 +303,7 @@ class ModelRouterStack(Stack):
                 layers=[common_layer],
                 timeout=Duration.seconds(120),
                 memory_size=512,
+                tracing=lambda_.Tracing.ACTIVE,
                 environment={
                     "SECRET_ARN": secrets[provider_name].secret_arn,
                     "GUARDRAIL_ID": guardrail.attr_guardrail_id,
@@ -361,6 +363,7 @@ class ModelRouterStack(Stack):
             role=router_role,
             timeout=Duration.seconds(30),
             memory_size=512,
+            tracing=lambda_.Tracing.ACTIVE,
             environment=router_env,
             log_retention=logs.RetentionDays.ONE_MONTH,
         )

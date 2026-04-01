@@ -165,6 +165,62 @@ If you're a BD or AM working with universities and research institutions:
 | **Infrastructure total** | **~$5/month** |
 | LLM tokens | Per-provider pricing (your existing spend) |
 
+## Known Limitations
+
+### No Streaming Responses
+
+All LLM calls complete fully before returning. The router does not stream
+tokens to the client. Long-form generation (essays, code files) will have
+higher latency than a streaming interface would.
+
+### Guardrails Coverage
+
+Bedrock Guardrails are applied to every call, but coverage differs by provider:
+
+- **Bedrock**: native guardrail integration via `guardrailConfig` in the
+  Converse API — blocks happen inside Bedrock before tokens are returned
+- **Anthropic / OpenAI / Gemini**: guardrails run as a post-call check on
+  the completed response text — the model call happens first, then the
+  output is evaluated
+
+The practical effect: external provider calls may incur token costs even
+when guardrails ultimately block the response.
+
+### Response Cache Scope
+
+The DynamoDB cache only activates when `temperature ≤ 0.3`. Higher-temperature
+requests are never cached. The cache is also not invalidated when you rotate
+a provider's API key — use `skip_cache: true` on the first call after rotation
+to force a fresh response.
+
+### Input and Output Size Limits
+
+| Parameter | Limit |
+|-----------|-------|
+| Prompt | 100 KB |
+| Context field | 8,000 characters |
+| Max output tokens | 16,384 |
+| Router timeout | 30 seconds |
+| Provider timeout | 120 seconds |
+
+### Provider Availability Detection
+
+The router caches provider availability for 5 minutes. If you add a new
+provider secret or revoke one, expect up to 5 minutes before the router
+detects the change. The `/status` endpoint always reflects live state.
+
+### Single-Region Deployment
+
+The stack deploys to one region. There is no built-in cross-region failover.
+For HA, deploy two stacks in separate regions and add Route 53 latency
+routing in front of both API Gateway endpoints.
+
+### Per-Provider Rate Limits
+
+Each provider enforces its own rate limits independently. The router will
+fall back to the next provider on a rate-limit error, but the failed call
+still counts against that provider's quota.
+
 ## License
 
 Apache 2.0

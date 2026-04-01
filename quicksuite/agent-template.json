@@ -1,0 +1,90 @@
+{
+  "_comment": "Quick Suite MCP Actions Integration configuration template for the Model Router.",
+  "_instructions": [
+    "1. Run scripts/post-deploy.sh to retrieve your stack output values.",
+    "2. Replace every <PLACEHOLDER> with the value from that output.",
+    "3. In Quick Suite, go to Settings > Integrations > MCP Actions > New Integration.",
+    "4. Paste the filled-in values into the corresponding fields.",
+    "5. See docs/quicksuite-integration.md for a complete walkthrough with screenshots."
+  ],
+
+  "integration_name": "Quick Suite Model Router",
+  "integration_description": "Multi-provider LLM routing with Bedrock Guardrails governance. Routes analyze, generate, research, summarize, and code tasks to the best available model (Bedrock, Anthropic, OpenAI, or Gemini).",
+
+  "agentcore_gateway": {
+    "comment": "Register the API Gateway endpoint as an AgentCore Gateway OpenAPI target, then point Quick Suite at your AgentCore Gateway MCP endpoint.",
+    "mcp_endpoint": "https://<AGENTCORE_GATEWAY_ID>.gateway.bedrock-agentcore.<REGION>.amazonaws.com/mcp",
+    "openapi_target": {
+      "target_name": "quick-suite-model-router",
+      "api_endpoint": "<API_GATEWAY_URL>",
+      "openapi_spec_url": "<API_GATEWAY_URL>openapi.json",
+      "auth": {
+        "type": "oauth2_client_credentials",
+        "token_endpoint": "<COGNITO_TOKEN_URL>",
+        "client_id": "<COGNITO_CLIENT_ID>",
+        "client_secret": "<COGNITO_CLIENT_SECRET>",
+        "scopes": ["quick-suite-model-router/invoke"]
+      }
+    }
+  },
+
+  "tools": [
+    {
+      "name": "analyze",
+      "description": "Analyze data, text, or documents with the best available LLM. Use for structured analysis, comparison, evaluation, or interpretation tasks.",
+      "example_prompts": [
+        "Analyze the sentiment trends in this survey data",
+        "Compare these two research papers and summarize the key differences",
+        "Evaluate the statistical significance of these results"
+      ]
+    },
+    {
+      "name": "generate",
+      "description": "Generate content — reports, drafts, emails, presentations — with the best available LLM.",
+      "example_prompts": [
+        "Draft a methods section for this research paper",
+        "Generate a grant narrative from these bullet points",
+        "Write an executive summary of this dataset analysis"
+      ]
+    },
+    {
+      "name": "research",
+      "description": "Research a topic with deep reasoning capabilities. Best for multi-step investigation, literature synthesis, or hypothesis exploration.",
+      "example_prompts": [
+        "What are the current best practices for RNA-seq normalization?",
+        "Summarize recent advances in transformer architectures for genomics",
+        "What statistical methods are appropriate for this study design?"
+      ]
+    },
+    {
+      "name": "summarize",
+      "description": "Summarize documents, datasets, or text with the best available LLM. Optimized for speed and conciseness.",
+      "example_prompts": [
+        "Summarize this 50-page technical report in 3 paragraphs",
+        "Create a bullet-point summary of these meeting notes",
+        "What are the key findings from this dataset description?"
+      ]
+    },
+    {
+      "name": "code",
+      "description": "Generate, review, debug, or explain code with the best available LLM. Supports Python, R, SQL, and most languages.",
+      "example_prompts": [
+        "Write a Python script to parse this CSV and compute summary statistics",
+        "Review this R code for statistical errors",
+        "Explain what this SQL query does and suggest optimizations"
+      ]
+    }
+  ],
+
+  "provider_stack_outputs": {
+    "comment": "These keys correspond to CloudFormation output names from cdk deploy. Run scripts/post-deploy.sh to see all values.",
+    "ApiEndpoint": "<API_GATEWAY_URL>",
+    "CognitoUserPoolId": "<COGNITO_POOL_ID>",
+    "CognitoClientId": "<COGNITO_CLIENT_ID>",
+    "CognitoTokenUrl": "<COGNITO_TOKEN_URL>",
+    "GuardrailId": "<GUARDRAIL_ID>",
+    "AnthropicSecretArn": "<ANTHROPIC_SECRET_ARN>",
+    "OpenaiSecretArn": "<OPENAI_SECRET_ARN>",
+    "GeminiSecretArn": "<GEMINI_SECRET_ARN>"
+  }
+}
