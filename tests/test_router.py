@@ -489,3 +489,137 @@ class TestGetAvailableProviders:
             result = h.get_available_providers()
         # Stale cache preserved — not cleared
         assert "anthropic" in result
+
+
+# ---------------------------------------------------------------------------
+# PHI-tagged request routing (Issue #9)
+# ---------------------------------------------------------------------------
+
+class TestPhiRouting:
+    """When data_classification == "phi", only Bedrock providers are candidates."""
+
+    def test_phi_request_selects_bedrock_when_available(self, routing_config, provider_functions, provider_secrets):
+        """PHI-tagged request routes to Bedrock even when Anthropic is preferred first in config."""
+        # Routing config with Anthropic first
+        config = {
+            "routing": {
+                "analyze": {
+                    "preferred": [
+                        "anthropic/claude-sonnet-4-20250514",
+                        "bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
+                    ],
+                    "system_prompt": "You are an analyst.",
+                },
+            },
+            "defaults": {"max_tokens": 4096, "temperature": 0.7},
+        }
+        h = _load_handler(config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock", "anthropic"}):
+            provider, model = h.select_provider("analyze", phi_mode=True)
+        assert provider == "bedrock"
+
+    def test_phi_request_never_selects_anthropic(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock", "anthropic", "openai", "gemini"}):
+            provider, model = h.select_provider("analyze", phi_mode=True)
+        assert provider == "bedrock"
+
+    def test_phi_request_never_selects_openai(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        # Only openai and gemini available — no Bedrock
+        with patch.object(h, "_available_providers", {"openai", "gemini"}):
+            provider, model = h.select_provider("analyze", phi_mode=True)
+        assert provider is None
+
+    def test_phi_request_no_bedrock_configured_returns_none(self, provider_functions, provider_secrets):
+        """If the preferred list has no Bedrock entries, phi_mode yields (None, None)."""
+        config = {
+            "routing": {
+                "analyze": {
+                    "preferred": ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"],
+                    "system_prompt": "You are an analyst.",
+                },
+            },
+            "defaults": {"max_tokens": 4096, "temperature": 0.7},
+        }
+        h = _load_handler(config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"anthropic", "openai"}):
+            provider, model = h.select_provider("analyze", phi_mode=True)
+        assert provider is None
+        assert model is None
+
+    def test_phi_explicit_non_bedrock_ignored_silently(self, routing_config, provider_functions, provider_secrets):
+        """Explicit provider override for a non-Bedrock provider is silently ignored in PHI mode."""
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock", "openai"}):
+            # Caller explicitly asks for openai but data_classification=phi
+            provider, model = h.select_provider("analyze", explicit="openai", phi_mode=True)
+        assert provider == "bedrock"
+
+    def test_non_phi_request_unaffected(self, routing_config, provider_functions, provider_secrets):
+        """Non-PHI requests still use the full preference list."""
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"anthropic", "openai"}):
+            provider, model = h.select_provider("analyze", phi_mode=False)
+        assert provider == "anthropic"
+
+    def test_phi_field_in_invocation_triggers_bedrock_routing(self, routing_config, provider_functions, provider_secrets):
+        """End-to-end: data_classification=phi in the request body routes to Bedrock."""
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        success = {
+            "content": "PHI-safe response",
+            "provider": "bedrock",
+            "model": "anthropic.claude-sonnet-4-20250514-v1:0",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "guardrail_applied": True,
+            "guardrail_blocked": False,
+        }
+        with patch.object(h, "_available_providers", {"bedrock", "anthropic", "openai"}), \
+             patch.object(h.lambda_client, "invoke", return_value=_make_lambda_payload(success)):
+            event = {"tool": "analyze", "body": json.dumps({
+                "prompt": "Analyze this patient record",
+                "data_classification": "phi",
+            })}
+            result = h.handle_tool_invocation(event)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["provider"] == "bedrock"
+
+    def test_phi_field_case_insensitive(self, routing_config, provider_functions, provider_secrets):
+        """data_classification='PHI' (uppercase) also triggers PHI mode."""
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock", "anthropic"}):
+            provider, _ = h.select_provider("analyze")  # non-phi for baseline
+        # Now test with uppercase PHI via full invocation
+        success = {
+            "content": "ok",
+            "provider": "bedrock",
+            "model": "m",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "guardrail_applied": False,
+            "guardrail_blocked": False,
+        }
+        h2 = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h2, "_available_providers", {"bedrock", "anthropic"}), \
+             patch.object(h2.lambda_client, "invoke", return_value=_make_lambda_payload(success)):
+            event = {"tool": "analyze", "body": json.dumps({
+                "prompt": "test",
+                "data_classification": "PHI",
+            })}
+            result = h2.handle_tool_invocation(event)
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["provider"] == "bedrock"
+
+    def test_phi_no_bedrock_returns_503(self, routing_config, provider_functions, provider_secrets):
+        """When PHI mode is active and no Bedrock is available, return 503."""
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"anthropic", "openai"}):
+            event = {"tool": "analyze", "body": json.dumps({
+                "prompt": "test",
+                "data_classification": "phi",
+            })}
+            result = h.handle_tool_invocation(event)
+        assert result["statusCode"] == 503

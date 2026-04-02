@@ -36,6 +36,9 @@ from aws_cdk import (
     aws_apigateway as apigw,
 )
 from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
     aws_bedrock as bedrock,
 )
 from aws_cdk import (
@@ -86,6 +89,12 @@ class ModelRouterStack(Stack):
         )
         guardrail_version = self.node.try_get_context("guardrail_version") or "DRAFT"
 
+        # VPC flag — when true, Lambdas run inside a VPC with private endpoints
+        # for S3, DynamoDB, and Secrets Manager. No internet egress.
+        enable_vpc_raw = self.node.try_get_context("enable_vpc")
+        enable_vpc = enable_vpc_raw is True or str(enable_vpc_raw).lower() == "true"
+        vpc_id = self.node.try_get_context("vpc_id") or ""
+
         # -----------------------------------------------------------------
         # Routing config
         # -----------------------------------------------------------------
@@ -97,6 +106,100 @@ class ModelRouterStack(Stack):
                 routing_config = yaml.safe_load(f)
         else:
             routing_config = self._default_routing_config()
+
+        # -----------------------------------------------------------------
+        # VPC (optional) — private networking with VPC endpoints
+        # When enable_vpc=true: Lambdas have no internet egress; all AWS
+        # service calls use Interface or Gateway VPC endpoints.
+        # -----------------------------------------------------------------
+        lambda_vpc = None
+        lambda_vpc_subnets = None
+        lambda_security_groups = None
+
+        if enable_vpc:
+            if vpc_id:
+                lambda_vpc = ec2.Vpc.from_lookup(self, "ExistingVpc", vpc_id=vpc_id)
+            else:
+                lambda_vpc = ec2.Vpc(
+                    self,
+                    "RouterVpc",
+                    vpc_name=f"{prefix}-vpc",
+                    max_azs=2,
+                    nat_gateways=0,
+                    subnet_configuration=[
+                        ec2.SubnetConfiguration(
+                            name="private",
+                            subnet_type=ec2.SubnetType.PRIVATE_ISOLATED,
+                            cidr_mask=24,
+                        )
+                    ],
+                )
+
+            # Security group for Lambda — no inbound, outbound to VPC only
+            lambda_sg = ec2.SecurityGroup(
+                self,
+                "LambdaSg",
+                vpc=lambda_vpc,
+                security_group_name=f"{prefix}-lambda-sg",
+                description="Quick Suite Router Lambda — VPC-isolated, no internet egress",
+                allow_all_outbound=False,
+            )
+            # Allow HTTPS within VPC (for VPC endpoints)
+            lambda_sg.add_egress_rule(
+                ec2.Peer.ipv4(lambda_vpc.vpc_cidr_block),
+                ec2.Port.tcp(443),
+                "HTTPS to VPC endpoints",
+            )
+
+            lambda_vpc_subnets = ec2.SubnetSelection(
+                subnet_type=ec2.SubnetType.PRIVATE_ISOLATED
+            )
+            lambda_security_groups = [lambda_sg]
+
+            # Gateway endpoints (free, route-table based)
+            lambda_vpc.add_gateway_endpoint(
+                "S3GatewayEndpoint",
+                service=ec2.GatewayVpcEndpointAwsService.S3,
+            )
+            lambda_vpc.add_gateway_endpoint(
+                "DynamoDbGatewayEndpoint",
+                service=ec2.GatewayVpcEndpointAwsService.DYNAMODB,
+            )
+
+            # Interface endpoints (billed per-hour, required for Secrets Manager
+            # and Lambda invocation)
+            endpoint_sg = ec2.SecurityGroup(
+                self,
+                "EndpointSg",
+                vpc=lambda_vpc,
+                security_group_name=f"{prefix}-endpoint-sg",
+                description="Allow Lambda SG to reach VPC interface endpoints",
+                allow_all_outbound=False,
+            )
+            endpoint_sg.add_ingress_rule(
+                lambda_sg,
+                ec2.Port.tcp(443),
+                "Inbound HTTPS from Lambda SG",
+            )
+
+            for endpoint_id, svc in [
+                ("SecretsManagerEndpoint", ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER),
+                ("LambdaEndpoint", ec2.InterfaceVpcEndpointAwsService.LAMBDA),
+                ("CloudWatchEndpoint", ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_MONITORING),
+                ("CloudWatchLogsEndpoint", ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS),
+                ("XRayEndpoint", ec2.InterfaceVpcEndpointAwsService.XRAY),
+                ("BedrockEndpoint", ec2.InterfaceVpcEndpointAwsService.BEDROCK),
+                ("BedrockRuntimeEndpoint", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME),
+            ]:
+                ec2.InterfaceVpcEndpoint(
+                    self,
+                    endpoint_id,
+                    vpc=lambda_vpc,
+                    service=svc,
+                    subnets=lambda_vpc_subnets,
+                    security_groups=[endpoint_sg],
+                    private_dns_enabled=True,
+                )
 
         # -----------------------------------------------------------------
         # Secrets Manager — one per external provider (Bedrock uses IAM)
@@ -274,15 +377,23 @@ class ModelRouterStack(Stack):
         # -----------------------------------------------------------------
 
         # --- Bedrock provider (IAM auth, no external secret) ---
+        _lambda_managed_policies = [
+            iam.ManagedPolicy.from_aws_managed_policy_name(
+                "service-role/AWSLambdaBasicExecutionRole"
+            )
+        ]
+        if enable_vpc:
+            _lambda_managed_policies.append(
+                iam.ManagedPolicy.from_aws_managed_policy_name(
+                    "service-role/AWSLambdaVPCAccessExecutionRole"
+                )
+            )
+
         bedrock_role = iam.Role(
             self,
             "BedrockProviderRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSLambdaBasicExecutionRole"
-                )
-            ],
+            managed_policies=list(_lambda_managed_policies),
         )
         bedrock_role.add_to_policy(
             iam.PolicyStatement(
@@ -319,6 +430,9 @@ class ModelRouterStack(Stack):
                 "GUARDRAIL_VERSION": guardrail_version,
             },
             log_retention=logs.RetentionDays.ONE_MONTH,
+            vpc=lambda_vpc,
+            vpc_subnets=lambda_vpc_subnets,
+            security_groups=lambda_security_groups,
         )
 
         # --- External providers (Anthropic, OpenAI, Gemini) ---
@@ -340,6 +454,9 @@ class ModelRouterStack(Stack):
                     "GUARDRAIL_VERSION": guardrail_version,
                 },
                 log_retention=logs.RetentionDays.ONE_MONTH,
+                vpc=lambda_vpc,
+                vpc_subnets=lambda_vpc_subnets,
+                security_groups=lambda_security_groups,
             )
             secrets[provider_name].grant_read(fn)
             fn.add_to_role_policy(
@@ -357,11 +474,7 @@ class ModelRouterStack(Stack):
             self,
             "RouterRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSLambdaBasicExecutionRole"
-                )
-            ],
+            managed_policies=list(_lambda_managed_policies),
         )
 
         for name, fn in provider_lambdas.items():
@@ -398,6 +511,9 @@ class ModelRouterStack(Stack):
             tracing=lambda_.Tracing.ACTIVE,
             environment=router_env,
             log_retention=logs.RetentionDays.ONE_MONTH,
+            vpc=lambda_vpc,
+            vpc_subnets=lambda_vpc_subnets,
+            security_groups=lambda_security_groups,
         )
 
         if cache_table:
@@ -431,6 +547,9 @@ class ModelRouterStack(Stack):
                 "SPEND_TABLE": spend_table.table_name,
             },
             log_retention=logs.RetentionDays.ONE_MONTH,
+            vpc=lambda_vpc,
+            vpc_subnets=lambda_vpc_subnets,
+            security_groups=lambda_security_groups,
         )
         spend_table.grant_read_data(query_spend_fn)
 
@@ -818,6 +937,15 @@ class ModelRouterStack(Stack):
             value=spend_table.table_name,
             description="DynamoDB spend ledger table (qs-router-spend)",
         )
+
+        if enable_vpc and lambda_vpc:
+            CfnOutput(
+                self,
+                "VpcId",
+                value=lambda_vpc.vpc_id,
+                description="VPC ID used for Lambda isolation (enable_vpc=true)",
+            )
+
         CfnOutput(
             self,
             "QuerySpendFunctionName",

@@ -27,19 +27,20 @@ tracking to CLAUDE.md or create TODO.md files.
 To report a bug or propose a feature, open a GitHub Issue with the appropriate
 label. All release planning happens via milestones.
 
-## Current State — v0.7.0
+## Current State — v0.8.0
 
-### File Inventory (28 files)
+### File Inventory (29 files)
 
 **Code:**
 - `app.py` — CDK entry point
-- `cdk.json` — CDK config with context flags (enable_cache, cache_ttl_minutes, budget_caps_secret_arn)
+- `cdk.json` — CDK config with context flags (enable_cache, cache_ttl_minutes, budget_caps_secret_arn, enable_vpc, vpc_id)
 - `requirements.txt` — CDK dependencies
 - `stacks/__init__.py` — empty
 - `stacks/model_router_stack.py` — main CDK stack (Cognito, Secrets Manager,
-  Lambdas, API Gateway, Bedrock Guardrail, DynamoDB cache + spend ledger, CloudWatch dashboard)
+  Lambdas, API Gateway, Bedrock Guardrail, DynamoDB cache + spend ledger, CloudWatch dashboard,
+  optional VPC with private endpoints)
 - `lambdas/router/handler.py` — task classification, provider selection,
-  cache check, fallback logic, spend record write, budget cap enforcement
+  cache check, fallback logic, spend record write, budget cap enforcement, PHI routing filter
 - `lambdas/common/python/provider_interface.py` — shared governance utilities
   (guardrails, CloudWatch metrics, DynamoDB cache helpers, spend ledger write,
   cost_usd computation, spend department query)
@@ -61,6 +62,7 @@ label. All release planning happens via milestones.
 - `docs/setup-openai.md` — OpenAI setup with site license instructions
 - `docs/setup-gemini.md` — Gemini setup with Google Workspace instructions
 - `docs/quicksuite-integration.md` — AgentCore Gateway + Quick Suite MCP setup
+- `docs/compliance.md` — HIPAA-ready deployment guide (VPC isolation, PHI tagging, CloudTrail, Guardrail hardening)
 
 **GTM (go-to-market for BD/AM peers):**
 - `gtm/bd-playbook.md` — discovery questions, demo script, competitive positioning

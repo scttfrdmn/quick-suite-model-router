@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-02
+
+### Added
+- VPC Lambda deployment (`enable_vpc` CDK context flag, default false): when enabled, all Lambda functions run in a private isolated VPC with no internet egress; Gateway VPC endpoints for S3 and DynamoDB; Interface VPC endpoints for Secrets Manager, Lambda invocation, CloudWatch, X-Ray, Bedrock, and Bedrock Runtime; optional `vpc_id` context var to reuse an existing VPC; `AWSLambdaVPCAccessExecutionRole` added to Lambda IAM roles when VPC mode is active; `VpcId` CloudFormation output (closes #8)
+- PHI-tagged request routing: `data_classification: "phi"` field on any tool call silently restricts the provider candidate set to Bedrock only; non-Bedrock providers (Anthropic, OpenAI, Gemini) excluded regardless of preference lists or explicit overrides; if no Bedrock provider is available, standard 503 is returned (no PHI reaches external providers); PHI filtering applied in both primary selection and fallback chain (closes #9)
+- `_NON_BEDROCK_PROVIDERS` constant in `handler.py` enumerates external providers for PHI exclusion
+- `docs/compliance.md`: HIPAA-ready deployment guide covering `enable_vpc` walkthrough, PHI tagging usage, CloudTrail setup recommendations, Bedrock Guardrail hardening for healthcare, and external provider opt-out note; target audience is health science school IT administrators (closes #10)
+- 9 new unit tests for PHI routing: Bedrock-only selection, non-Bedrock exclusion, no-Bedrock-available 503, case-insensitive PHI field, explicit non-Bedrock override ignored, non-PHI requests unaffected, end-to-end invocation test
+
 ## [0.7.0] - 2026-04-02
 
 ### Added

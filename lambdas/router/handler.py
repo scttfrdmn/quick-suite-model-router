@@ -221,8 +221,12 @@ def handle_tool_invocation(event):
             "reason": f"streaming only supported for {sorted(STREAMING_TOOLS)}",
         }))
 
+    # PHI classification: restrict to Bedrock-only when data_classification == "phi"
+    data_classification = str(body.get("data_classification") or "").strip().lower()
+    phi_mode = data_classification == "phi"
+
     # Select provider
-    provider_key, model_id = select_provider(tool, body.get("provider"), department)
+    provider_key, model_id = select_provider(tool, body.get("provider"), department, phi_mode=phi_mode)
     if not provider_key:
         return _resp(503, {"error": "No providers available", "tool": tool})
 
@@ -275,7 +279,7 @@ def handle_tool_invocation(event):
 
         if "errorMessage" in payload or payload.get("error"):
             logger.error(f"Provider error: {payload.get('errorMessage') or payload.get('error')}")
-            return _fallback(tool, provider_key, request_payload, payload, department)
+            return _fallback(tool, provider_key, request_payload, payload, department, phi_mode=phi_mode)
 
         payload["latency_ms"] = latency
         payload["cached"] = False
@@ -314,7 +318,7 @@ def handle_tool_invocation(event):
     except Exception as e:
         logger.error(f"Failed to invoke {provider_key}: {e}")
         return _fallback(
-            tool, provider_key, request_payload, {"error": str(e)}, department
+            tool, provider_key, request_payload, {"error": str(e)}, department, phi_mode=phi_mode
         )
 
 
@@ -338,9 +342,18 @@ def _preferred_for(tool: str, department: str = "") -> list:
     return routing.get(tool, routing.get("analyze", {})).get("preferred", [])
 
 
-def select_provider(tool: str, explicit: str = None, department: str = "") -> tuple:
+_NON_BEDROCK_PROVIDERS = {"anthropic", "openai", "gemini"}
+
+
+def select_provider(tool: str, explicit: str = None, department: str = "", phi_mode: bool = False) -> tuple:
     available = get_available_providers()
     preferred = _preferred_for(tool, department)
+
+    # PHI mode: silently restrict candidate set to Bedrock only
+    if phi_mode:
+        preferred = [e for e in preferred if e.split("/")[0] not in _NON_BEDROCK_PROVIDERS]
+        if explicit and explicit in _NON_BEDROCK_PROVIDERS:
+            explicit = None  # ignore explicit non-Bedrock request silently
 
     if explicit:
         for entry in preferred:
@@ -365,8 +378,10 @@ def select_provider(tool: str, explicit: str = None, department: str = "") -> tu
     return None, None
 
 
-def _fallback(tool, failed, request_payload, error_payload, department: str = ""):
+def _fallback(tool, failed, request_payload, error_payload, department: str = "", phi_mode: bool = False):
     preferred = _preferred_for(tool, department)
+    if phi_mode:
+        preferred = [e for e in preferred if e.split("/")[0] not in _NON_BEDROCK_PROVIDERS]
     available = get_available_providers()
 
     past_failed = False
