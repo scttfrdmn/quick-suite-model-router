@@ -9,21 +9,21 @@
   ],
 
   "integration_name": "Quick Suite Model Router",
-  "integration_description": "Multi-provider LLM routing with Bedrock Guardrails governance. Routes analyze, generate, research, summarize, and code tasks to the best available model (Bedrock, Anthropic, OpenAI, or Gemini).",
+  "integration_description": "Multi-provider LLM routing with Bedrock Guardrails governance. Routes analyze, generate, research, summarize, and code tasks to the best available model (Bedrock, Anthropic, OpenAI, or Gemini). Supports per-department provider overrides.",
 
   "agentcore_gateway": {
     "comment": "Register the API Gateway endpoint as an AgentCore Gateway OpenAPI target, then point Quick Suite at your AgentCore Gateway MCP endpoint.",
     "mcp_endpoint": "https://<AGENTCORE_GATEWAY_ID>.gateway.bedrock-agentcore.<REGION>.amazonaws.com/mcp",
     "openapi_target": {
       "target_name": "quick-suite-model-router",
-      "api_endpoint": "<API_GATEWAY_URL>",
-      "openapi_spec_url": "<API_GATEWAY_URL>openapi.json",
+      "api_endpoint": "<ApiEndpoint>",
+      "openapi_spec_url": "<ApiEndpoint>openapi.json",
       "auth": {
         "type": "oauth2_client_credentials",
-        "token_endpoint": "<COGNITO_TOKEN_URL>",
-        "client_id": "<COGNITO_CLIENT_ID>",
-        "client_secret": "<COGNITO_CLIENT_SECRET>",
-        "scopes": ["quick-suite-model-router/invoke"]
+        "token_endpoint": "<CognitoTokenUrl>",
+        "client_id": "<CognitoClientId>",
+        "client_secret": "<COGNITO_CLIENT_SECRET_FROM_CONSOLE>",
+        "scopes": ["model-router/invoke"]
       }
     }
   },
@@ -32,59 +32,147 @@
     {
       "name": "analyze",
       "description": "Analyze data, text, or documents with the best available LLM. Use for structured analysis, comparison, evaluation, or interpretation tasks.",
+      "inputSchema": {
+        "prompt": "string (required) — the text or question to analyze",
+        "department": "string (optional) — department name for provider routing override (e.g. 'openai-only', 'bedrock-preferred')",
+        "provider": "string (optional) — force a specific provider (bedrock, anthropic, openai, gemini)",
+        "max_tokens": "integer (optional, default 4096)",
+        "temperature": "number (optional, 0.0–1.0, default 0.7)",
+        "context": "string (optional) — additional context to prepend",
+        "skip_cache": "boolean (optional) — bypass response cache"
+      },
       "example_prompts": [
         "Analyze the sentiment trends in this survey data",
         "Compare these two research papers and summarize the key differences",
         "Evaluate the statistical significance of these results"
-      ]
+      ],
+      "example_payload": {
+        "prompt": "Analyze graduation rate trends from 2018–2024",
+        "department": "institutional-research",
+        "max_tokens": 2048
+      }
     },
     {
       "name": "generate",
       "description": "Generate content — reports, drafts, emails, presentations — with the best available LLM.",
+      "inputSchema": {
+        "prompt": "string (required) — content generation instruction",
+        "department": "string (optional) — department name for provider routing override",
+        "provider": "string (optional) — force a specific provider",
+        "max_tokens": "integer (optional, default 4096)",
+        "temperature": "number (optional, 0.0–1.0, default 0.7)",
+        "context": "string (optional) — background material to draw from",
+        "skip_cache": "boolean (optional)"
+      },
       "example_prompts": [
         "Draft a methods section for this research paper",
         "Generate a grant narrative from these bullet points",
         "Write an executive summary of this dataset analysis"
-      ]
+      ],
+      "example_payload": {
+        "prompt": "Write an executive summary of enrollment trends",
+        "department": "provost-office",
+        "temperature": 0.5
+      }
     },
     {
       "name": "research",
       "description": "Research a topic with deep reasoning capabilities. Best for multi-step investigation, literature synthesis, or hypothesis exploration.",
+      "inputSchema": {
+        "prompt": "string (required) — research question or topic",
+        "department": "string (optional) — department name for provider routing override",
+        "provider": "string (optional) — force a specific provider",
+        "max_tokens": "integer (optional, default 4096)",
+        "temperature": "number (optional, 0.0–1.0, default 0.7)",
+        "context": "string (optional) — prior research or constraints",
+        "skip_cache": "boolean (optional)"
+      },
       "example_prompts": [
         "What are the current best practices for RNA-seq normalization?",
         "Summarize recent advances in transformer architectures for genomics",
         "What statistical methods are appropriate for this study design?"
-      ]
+      ],
+      "example_payload": {
+        "prompt": "What predictive factors correlate with first-year student retention?",
+        "department": "academic-affairs",
+        "max_tokens": 4096
+      }
     },
     {
       "name": "summarize",
       "description": "Summarize documents, datasets, or text with the best available LLM. Optimized for speed and conciseness.",
+      "inputSchema": {
+        "prompt": "string (required) — text or document to summarize",
+        "department": "string (optional) — department name for provider routing override",
+        "provider": "string (optional) — force a specific provider",
+        "max_tokens": "integer (optional, default 4096)",
+        "temperature": "number (optional, 0.0–1.0, default 0.7)",
+        "context": "string (optional)",
+        "skip_cache": "boolean (optional)"
+      },
       "example_prompts": [
         "Summarize this 50-page technical report in 3 paragraphs",
         "Create a bullet-point summary of these meeting notes",
         "What are the key findings from this dataset description?"
-      ]
+      ],
+      "example_payload": {
+        "prompt": "Summarize the attached IRB protocol in plain language",
+        "department": "research-office",
+        "temperature": 0.2
+      }
     },
     {
       "name": "code",
       "description": "Generate, review, debug, or explain code with the best available LLM. Supports Python, R, SQL, and most languages.",
+      "inputSchema": {
+        "prompt": "string (required) — coding task or question",
+        "department": "string (optional) — department name for provider routing override",
+        "provider": "string (optional) — force a specific provider",
+        "max_tokens": "integer (optional, default 4096)",
+        "temperature": "number (optional, 0.0–1.0, default 0.7)",
+        "context": "string (optional) — existing code or data schema",
+        "skip_cache": "boolean (optional)"
+      },
       "example_prompts": [
         "Write a Python script to parse this CSV and compute summary statistics",
         "Review this R code for statistical errors",
         "Explain what this SQL query does and suggest optimizations"
-      ]
+      ],
+      "example_payload": {
+        "prompt": "Write an R script to run a logistic regression on this enrollment dataset",
+        "department": "institutional-research",
+        "temperature": 0.1
+      }
     }
   ],
 
   "provider_stack_outputs": {
-    "comment": "These keys correspond to CloudFormation output names from cdk deploy. Run scripts/post-deploy.sh to see all values.",
+    "comment": "These keys match CloudFormation output names from cdk deploy. Run scripts/post-deploy.sh to see all values.",
     "ApiEndpoint": "<API_GATEWAY_URL>",
     "CognitoUserPoolId": "<COGNITO_POOL_ID>",
     "CognitoClientId": "<COGNITO_CLIENT_ID>",
     "CognitoTokenUrl": "<COGNITO_TOKEN_URL>",
     "GuardrailId": "<GUARDRAIL_ID>",
+    "ApiKeyId": "<API_KEY_ID>",
     "AnthropicSecretArn": "<ANTHROPIC_SECRET_ARN>",
     "OpenaiSecretArn": "<OPENAI_SECRET_ARN>",
     "GeminiSecretArn": "<GEMINI_SECRET_ARN>"
+  },
+
+  "department_overrides_example": {
+    "comment": "Add department_overrides to your routing_config.yaml to enable per-department routing. The 'department' field in the request payload selects the override.",
+    "department_overrides": {
+      "openai-only": {
+        "analyze": {"preferred": ["openai/gpt-4o"]},
+        "generate": {"preferred": ["openai/gpt-4o"]},
+        "research": {"preferred": ["openai/gpt-4o"]},
+        "summarize": {"preferred": ["openai/gpt-4o-mini"]},
+        "code": {"preferred": ["openai/gpt-4o"]}
+      },
+      "bedrock-preferred": {
+        "analyze": {"preferred": ["bedrock/anthropic.claude-sonnet-4-20250514-v1:0"]},
+        "code": {"preferred": ["bedrock/anthropic.claude-sonnet-4-20250514-v1:0"]}
+      }
+    }
   }
 }

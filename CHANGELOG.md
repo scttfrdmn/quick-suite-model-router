@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-01
+
+### Added
+- `department` dimension in `emit_usage_metrics()` (`provider_interface.py`): all CloudWatch token/latency/guardrail metrics now carry a `Department` dimension for per-department usage reporting
+- API Gateway usage plan and API key (`ModelRouterUsagePlan`, `ModelRouterApiKey`) with configurable throttle rate/burst via `api_throttle_rate`/`api_throttle_burst` CDK context variables; `ApiKeyId` CloudFormation output added
+- Multi-region failover preparation: `stacks/multi_region_stack.py` with Route 53 health-check and PRIMARY/SECONDARY failover `CfnRecordSet` pair; deployed automatically when `secondary_region` CDK context variable is set
+- `quicksuite/agent-template.json` refreshed: placeholder names aligned with CDK output keys, `department` field added to all five tool input schemas, example payloads added, `department_overrides_example` section added
+
+### Changed
+- Router `handler.py` passes `department` keyword argument to all `emit_usage_metrics()` calls (cache hit, success, and fallback paths)
+- `app.py` updated to support optional secondary-region multi-region stack deployment
+
 ## [0.3.0] - 2026-04-01
 
 ### Added
@@ -40,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Secrets Manager integration for external provider API keys (no env-var key storage)
 - CDK stack with full infrastructure-as-code deployment (Cognito, API Gateway, Lambdas, DynamoDB, Guardrail, CloudWatch dashboard)
 
-[unreleased]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.3.0...HEAD
+[unreleased]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/scttfrdmn/quick-suite-model-router/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/scttfrdmn/quick-suite-model-router/releases/tag/v0.1.0

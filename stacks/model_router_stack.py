@@ -63,6 +63,9 @@ from aws_cdk import (
     aws_sns as sns,
 )
 from aws_cdk import (
+    aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_sns_subscriptions as sns_subs,
 )
 from constructs import Construct
@@ -456,6 +459,28 @@ class ModelRouterStack(Stack):
         )
 
         # -----------------------------------------------------------------
+        # API Usage Plan + API Key (rate limiting)
+        # -----------------------------------------------------------------
+        throttle_rate = int(self.node.try_get_context("api_throttle_rate") or 100)
+        throttle_burst = int(self.node.try_get_context("api_throttle_burst") or 200)
+
+        api_key = api.add_api_key(
+            "ModelRouterApiKey",
+            api_key_name=f"{prefix}-api-key",
+            description="Quick Suite Model Router API key",
+        )
+        usage_plan = api.add_usage_plan(
+            "ModelRouterUsagePlan",
+            name=f"{prefix}-usage-plan",
+            throttle=apigw.ThrottleSettings(
+                rate_limit=throttle_rate,
+                burst_limit=throttle_burst,
+            ),
+        )
+        usage_plan.add_api_key(api_key)
+        usage_plan.add_api_stage(stage=api.deployment_stage)
+
+        # -----------------------------------------------------------------
         # CloudWatch Dashboard
         # -----------------------------------------------------------------
         dashboard = cw.Dashboard(
@@ -568,7 +593,7 @@ class ModelRouterStack(Stack):
         # CloudWatch Alarms
         # -----------------------------------------------------------------
         alarm_email = self.node.try_get_context("alarm_email")
-        alarm_actions = []
+        alarm_topic = None
         if alarm_email:
             alarm_topic = sns.Topic(
                 self,
@@ -577,10 +602,13 @@ class ModelRouterStack(Stack):
                 display_name="Quick Suite Model Router Alarms",
             )
             alarm_topic.add_subscription(sns_subs.EmailSubscription(alarm_email))
-            alarm_actions = [cw.SnsAction(alarm_topic)]
+
+        def _add_sns_action(alarm):
+            if alarm_topic:
+                alarm.add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         # Alarm 1 — p99 latency > 5 s on the router Lambda
-        cw.Alarm(
+        latency_alarm = cw.Alarm(
             self,
             "LatencyAlarm",
             alarm_name=f"{prefix}-latency-p99",
@@ -593,8 +621,8 @@ class ModelRouterStack(Stack):
             evaluation_periods=2,
             comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
-            alarm_actions=alarm_actions,
         )
+        _add_sns_action(latency_alarm)
 
         # Alarm 2 — error rate > 5 %  (errors / invocations * 100)
         error_rate_metric = cw.MathExpression(
@@ -606,7 +634,7 @@ class ModelRouterStack(Stack):
             label="Router error rate %",
             period=Duration.minutes(5),
         )
-        cw.Alarm(
+        error_alarm = cw.Alarm(
             self,
             "ErrorRateAlarm",
             alarm_name=f"{prefix}-error-rate",
@@ -616,8 +644,8 @@ class ModelRouterStack(Stack):
             evaluation_periods=2,
             comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
-            alarm_actions=alarm_actions,
         )
+        _add_sns_action(error_alarm)
 
         # Alarm 3 — fallback rate > 20 %
         fallback_rate_metric = cw.MathExpression(
@@ -634,7 +662,7 @@ class ModelRouterStack(Stack):
             label="Fallback rate %",
             period=Duration.minutes(5),
         )
-        cw.Alarm(
+        fallback_alarm = cw.Alarm(
             self,
             "FallbackRateAlarm",
             alarm_name=f"{prefix}-fallback-rate",
@@ -644,8 +672,8 @@ class ModelRouterStack(Stack):
             evaluation_periods=2,
             comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cw.TreatMissingData.NOT_BREACHING,
-            alarm_actions=alarm_actions,
         )
+        _add_sns_action(fallback_alarm)
 
         # -----------------------------------------------------------------
         # Outputs
@@ -688,6 +716,16 @@ class ModelRouterStack(Stack):
                 f"/cloudwatch/home#dashboards:name={prefix}-usage"
             ),
         )
+
+        CfnOutput(
+            self,
+            "ApiKeyId",
+            value=api_key.key_id,
+            description="API Gateway API key ID (retrieve value via console or AWS CLI)",
+        )
+
+        # Expose for cross-stack references (multi-region stack)
+        self.api_url = api.url
 
         if cache_table:
             CfnOutput(

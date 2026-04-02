@@ -161,6 +161,7 @@ def handle_tool_invocation(event):
                 provider=cached.get("provider", "cache"),
                 model=cached.get("model", ""),
                 cache_hit=True,
+                department=department,
             )
             logger.info(f"Cache hit for tool={tool}")
             return _resp(200, cached)
@@ -209,6 +210,7 @@ def handle_tool_invocation(event):
             latency_ms=latency,
             guardrail_blocked=payload.get("guardrail_blocked", False),
             cache_hit=False,
+            department=department,
         )
 
         # Cache the response
@@ -308,6 +310,7 @@ def _fallback(tool, failed, request_payload, error_payload, department: str = ""
                         latency_ms=fb_latency,
                         guardrail_blocked=payload.get("guardrail_blocked", False),
                         cache_hit=False,
+                        department=department,
                     )
                     return _resp(200, payload)
             except Exception as e:

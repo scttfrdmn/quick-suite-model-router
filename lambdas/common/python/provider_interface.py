@@ -100,6 +100,7 @@ def emit_usage_metrics(
     latency_ms: int = 0,
     guardrail_blocked: bool = False,
     cache_hit: bool = False,
+    department: str = "",
 ):
     """Emit CloudWatch custom metrics for usage tracking."""
     try:
@@ -107,6 +108,7 @@ def emit_usage_metrics(
         dimensions = [
             {"Name": "Provider", "Value": provider},
             {"Name": "Model", "Value": model or "unknown"},
+            {"Name": "Department", "Value": department or "none"},
         ]
 
         metrics = [
