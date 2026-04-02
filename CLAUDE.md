@@ -27,21 +27,24 @@ tracking to CLAUDE.md or create TODO.md files.
 To report a bug or propose a feature, open a GitHub Issue with the appropriate
 label. All release planning happens via milestones.
 
-## Current State — v0.6.0
+## Current State — v0.7.0
 
-### File Inventory (26 files)
+### File Inventory (28 files)
 
 **Code:**
 - `app.py` — CDK entry point
-- `cdk.json` — CDK config with context flags (enable_cache, cache_ttl_minutes)
+- `cdk.json` — CDK config with context flags (enable_cache, cache_ttl_minutes, budget_caps_secret_arn)
 - `requirements.txt` — CDK dependencies
 - `stacks/__init__.py` — empty
 - `stacks/model_router_stack.py` — main CDK stack (Cognito, Secrets Manager,
-  Lambdas, API Gateway, Bedrock Guardrail, DynamoDB cache, CloudWatch dashboard)
+  Lambdas, API Gateway, Bedrock Guardrail, DynamoDB cache + spend ledger, CloudWatch dashboard)
 - `lambdas/router/handler.py` — task classification, provider selection,
-  cache check, fallback logic; `stream: true` forwarded for generate/research
+  cache check, fallback logic, spend record write, budget cap enforcement
 - `lambdas/common/python/provider_interface.py` — shared governance utilities
-  (guardrails, CloudWatch metrics, DynamoDB cache helpers)
+  (guardrails, CloudWatch metrics, DynamoDB cache helpers, spend ledger write,
+  cost_usd computation, spend department query)
+- `lambdas/query-spend/handler.py` — AgentCore Lambda target; queries qs-router-spend
+  and aggregates cost by department/user/tool/date
 - `lambdas/providers/bedrock_provider.py` — Bedrock Converse + converse_stream API
 - `lambdas/providers/anthropic_provider.py` — Anthropic Messages API (blocking + streaming)
 - `lambdas/providers/openai_provider.py` — OpenAI Chat Completions API (blocking + streaming)

@@ -238,6 +238,27 @@ class ModelRouterStack(Stack):
             cache_table_name = cache_table.table_name
 
         # -----------------------------------------------------------------
+        # DynamoDB Spend Ledger (qs-router-spend)
+        # -----------------------------------------------------------------
+        spend_table = dynamodb.Table(
+            self,
+            "SpendLedger",
+            table_name="qs-router-spend",
+            partition_key=dynamodb.Attribute(
+                name="pk", type=dynamodb.AttributeType.STRING
+            ),
+            sort_key=dynamodb.Attribute(
+                name="sk", type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=RemovalPolicy.RETAIN,
+            time_to_live_attribute="expires_at",
+        )
+
+        # Budget caps secret (optional — CDK context var)
+        budget_caps_secret_arn = self.node.try_get_context("budget_caps_secret_arn") or ""
+
+        # -----------------------------------------------------------------
         # Shared Lambda Layer
         # -----------------------------------------------------------------
         common_layer = lambda_.LayerVersion(
@@ -359,6 +380,8 @@ class ModelRouterStack(Stack):
             ),
             "CACHE_TABLE": cache_table_name,
             "CACHE_TTL_MINUTES": str(cache_ttl_minutes),
+            "SPEND_TABLE": spend_table.table_name,
+            "BUDGET_CAPS_SECRET_ARN": budget_caps_secret_arn,
         }
 
         router_fn = lambda_.Function(
@@ -379,6 +402,37 @@ class ModelRouterStack(Stack):
 
         if cache_table:
             cache_table.grant_read_write_data(router_fn)
+
+        spend_table.grant_read_write_data(router_fn)
+
+        # Grant router Lambda read on the budget caps secret (if configured)
+        if budget_caps_secret_arn:
+            router_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[budget_caps_secret_arn],
+                )
+            )
+
+        # -----------------------------------------------------------------
+        # query-spend Lambda (AgentCore Lambda target)
+        # -----------------------------------------------------------------
+        query_spend_fn = lambda_.Function(
+            self,
+            "QuerySpendFunction",
+            function_name=f"{prefix}-query-spend",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset("lambdas/query-spend"),
+            timeout=Duration.seconds(30),
+            memory_size=256,
+            tracing=lambda_.Tracing.ACTIVE,
+            environment={
+                "SPEND_TABLE": spend_table.table_name,
+            },
+            log_retention=logs.RetentionDays.ONE_MONTH,
+        )
+        spend_table.grant_read_data(query_spend_fn)
 
         # -----------------------------------------------------------------
         # API Gateway — HTTP backend for AgentCore Gateway
@@ -757,6 +811,19 @@ class ModelRouterStack(Stack):
                 value=cache_table.table_name,
                 description="DynamoDB response cache table",
             )
+
+        CfnOutput(
+            self,
+            "SpendTableName",
+            value=spend_table.table_name,
+            description="DynamoDB spend ledger table (qs-router-spend)",
+        )
+        CfnOutput(
+            self,
+            "QuerySpendFunctionName",
+            value=query_spend_fn.function_name,
+            description="query_spend AgentCore Lambda target — register in AgentCore Gateway",
+        )
 
         # Convenience: secrets ARNs for populating after deploy
         for provider_name, secret in secrets.items():

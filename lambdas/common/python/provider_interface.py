@@ -267,3 +267,116 @@ def cache_put(
         )
     except Exception as e:
         logger.warning(f"Cache write failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Cost pricing table (input_per_1k, output_per_1k) in USD
+# ---------------------------------------------------------------------------
+
+_COST_TABLE: dict[str, tuple[float, float]] = {
+    # Bedrock-hosted Anthropic
+    "anthropic.claude-sonnet-4-20250514-v1:0": (0.003, 0.015),
+    "anthropic.claude-3-5-sonnet-20241022-v2:0": (0.003, 0.015),
+    "anthropic.claude-3-haiku-20240307-v1:0": (0.00025, 0.00125),
+    # Bedrock Nova
+    "amazon.nova-pro-v1:0": (0.0008, 0.0032),
+    "amazon.nova-lite-v1:0": (0.00006, 0.00024),
+    # Anthropic direct
+    "claude-sonnet-4-20250514": (0.003, 0.015),
+    "claude-3-5-sonnet-20241022": (0.003, 0.015),
+    "claude-3-haiku-20240307": (0.00025, 0.00125),
+    # OpenAI
+    "gpt-4o": (0.0025, 0.01),
+    "gpt-4o-mini": (0.00015, 0.0006),
+    "gpt-4-turbo": (0.01, 0.03),
+    # Gemini
+    "gemini-2.5-pro": (0.00125, 0.01),
+    "gemini-2.5-flash": (0.000075, 0.0003),
+    "gemini-1.5-pro": (0.00125, 0.005),
+}
+
+_DEFAULT_COST = (0.001, 0.005)  # fallback if model not in table
+
+
+def compute_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Return estimated USD cost for a call."""
+    # Strip provider prefix (e.g. "bedrock/..." → "...")
+    if "/" in model:
+        model = model.split("/", 1)[1]
+    in_per_1k, out_per_1k = _COST_TABLE.get(model, _DEFAULT_COST)
+    return round((input_tokens / 1000.0) * in_per_1k + (output_tokens / 1000.0) * out_per_1k, 8)
+
+
+# ---------------------------------------------------------------------------
+# Spend ledger
+# ---------------------------------------------------------------------------
+
+def spend_record_write(
+    table_name: str,
+    department: str,
+    user_id: str,
+    tool: str,
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+):
+    """Write one spend record to the qs-router-spend table after a successful call."""
+    if not table_name:
+        return
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        date_str = now.strftime("%Y-%m-%d")
+        timestamp = now.isoformat()
+        cost_usd = compute_cost_usd(model, input_tokens, output_tokens)
+        # TTL: 13 months from now
+        expires_at = int(time.time()) + (13 * 30 * 24 * 3600)
+
+        table = get_dynamo_table(table_name)
+        table.put_item(
+            Item={
+                "pk": f"{department}#{user_id}",
+                "sk": f"{tool}#{date_str}#{timestamp}",
+                "department": department,
+                "user_id": user_id,
+                "tool": tool,
+                "provider": provider,
+                "model": model,
+                "date": date_str,
+                "timestamp": timestamp,
+                "token_count_in": input_tokens,
+                "token_count_out": output_tokens,
+                "cost_usd": str(cost_usd),
+                "expires_at": expires_at,
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Spend ledger write failed: {e}")
+
+
+def spend_query_department_month(table_name: str, department: str, month_prefix: str) -> float:
+    """
+    Return total cost_usd for ALL users in a department in a given month (YYYY-MM).
+    Scans the table filtering on department + date begins_with month_prefix.
+    Returns 0.0 on any error (fail-open).
+    """
+    if not table_name:
+        return 0.0
+    try:
+        from boto3.dynamodb.conditions import Attr
+        table = get_dynamo_table(table_name)
+        resp = table.scan(
+            FilterExpression=Attr("department").eq(department) & Attr("date").begins_with(month_prefix),
+            ProjectionExpression="cost_usd",
+        )
+        total = 0.0
+        for item in resp.get("Items", []):
+            try:
+                total += float(item.get("cost_usd", 0))
+            except (ValueError, TypeError):
+                pass
+        return total
+    except Exception as e:
+        logger.warning(f"Spend department query failed (fail-open): {e}")
+        return 0.0

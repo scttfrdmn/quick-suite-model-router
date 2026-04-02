@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-02
+
+### Added
+- Spend ledger DynamoDB table `qs-router-spend` (PK: `department#user_id`, SK: `tool#date#timestamp`); TTL attribute `expires_at` set to 13 months (closes #5)
+- `spend_record_write()` in `provider_interface.py`: writes cost_usd, token counts, provider, model, department, user_id, tool, date, timestamp after every successful tool call; `cost_usd` computed from per-model price table in `compute_cost_usd()`; fails silently (never breaks the caller)
+- `compute_cost_usd()` in `provider_interface.py`: hardcoded price table for Bedrock (Claude Sonnet, Nova Pro/Lite), Anthropic direct, OpenAI (GPT-4o, GPT-4o-mini), Gemini (2.5 Pro/Flash); falls back to defaults for unknown models
+- `query_spend` AgentCore Lambda target (`lambdas/query-spend/handler.py`): inputs `department`, `user_id`, `date_range`, `group_by`; returns aggregated `cost_usd`, `token_count_in`, `token_count_out`, `call_count` grouped by dimension; returns empty results (not error) for unknown department/user (closes #6)
+- Budget cap enforcement: CDK context var `budget_caps_secret_arn` → Secret JSON `{department: monthly_usd_cap}`; loaded once at Lambda startup; router checks current-month department spend before invoking provider; returns `{"error": "budget_exceeded", ...}` with HTTP 402 when cap exceeded; fail-open on Secrets Manager or DynamoDB error (closes #7)
+- `department` defaults to `"default"`, `user_id` defaults to `"anonymous"` in spend records when not provided by caller
+- CDK: `SpendLedger` DynamoDB table, `QuerySpendFunction` Lambda, IAM grants; `SpendTableName` and `QuerySpendFunctionName` CloudFormation outputs
+- 34 new unit tests covering cost computation, spend ledger writes, query_spend aggregation/grouping, budget cap enforcement (blocked at cap, fail-open), and router integration
+
 ## [0.6.0] - 2026-04-02
 
 ### Added
@@ -84,7 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Secrets Manager integration for external provider API keys (no env-var key storage)
 - CDK stack with full infrastructure-as-code deployment (Cognito, API Gateway, Lambdas, DynamoDB, Guardrail, CloudWatch dashboard)
 
-[unreleased]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.6.0...HEAD
+[unreleased]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.4.1...v0.5.0
 [0.4.0]: https://github.com/scttfrdmn/quick-suite-router/compare/v0.3.0...v0.4.0

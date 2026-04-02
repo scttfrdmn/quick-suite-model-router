@@ -32,6 +32,8 @@ from provider_interface import (
     cache_key,
     cache_put,
     emit_usage_metrics,
+    spend_record_write,
+    spend_query_department_month,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,30 @@ PROVIDER_FUNCTIONS = json.loads(os.environ.get("PROVIDER_FUNCTIONS", "{}"))
 PROVIDER_SECRETS = json.loads(os.environ.get("PROVIDER_SECRETS", "{}"))
 CACHE_TABLE = os.environ.get("CACHE_TABLE", "")
 CACHE_TTL = int(os.environ.get("CACHE_TTL_MINUTES", "60"))
+SPEND_TABLE = os.environ.get("SPEND_TABLE", "")
+BUDGET_CAPS_SECRET_ARN = os.environ.get("BUDGET_CAPS_SECRET_ARN", "")
+
+# Budget caps: loaded once at startup from Secrets Manager (module-level cache).
+# Maps department -> monthly_usd_cap. Empty dict = no caps configured.
+_budget_caps: dict = {}
+_budget_caps_loaded = False
+
+
+def _load_budget_caps() -> dict:
+    """Load budget caps from Secrets Manager. Fail-open on any error."""
+    global _budget_caps, _budget_caps_loaded
+    if _budget_caps_loaded:
+        return _budget_caps
+    _budget_caps_loaded = True
+    if not BUDGET_CAPS_SECRET_ARN:
+        return _budget_caps
+    try:
+        resp = secrets_client.get_secret_value(SecretId=BUDGET_CAPS_SECRET_ARN)
+        _budget_caps = json.loads(resp["SecretString"])
+        logger.info(json.dumps({"budget_caps_loaded": True, "departments": list(_budget_caps.keys())}))
+    except Exception as e:
+        logger.warning(f"Budget caps load failed (fail-open): {e}")
+    return _budget_caps
 
 _available_providers = None
 _available_providers_fetched_at = 0.0
@@ -151,7 +177,37 @@ def handle_tool_invocation(event):
 
     system_prompt = _system_prompt(tool)
 
-    department = str(body.get("department") or "").strip()
+    # department/user_id: used for routing overrides, metrics, and spend ledger.
+    # Store raw value for routing (empty string = use global routing) but
+    # default to "default"/"anonymous" for spend ledger writes.
+    department_raw = str(body.get("department") or "").strip()
+    department = department_raw  # used for routing + metrics (empty = global)
+    spend_department = department_raw or "default"
+    user_id = str(body.get("user_id") or "anonymous").strip() or "anonymous"
+
+    # Budget cap enforcement
+    caps = _load_budget_caps()
+    if caps and spend_department in caps:
+        cap_usd = float(caps[spend_department])
+        try:
+            from datetime import datetime, timezone
+            month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+            spent_usd = spend_query_department_month(SPEND_TABLE, spend_department, month_prefix)
+            if spent_usd >= cap_usd:
+                logger.warning(json.dumps({
+                    "budget_exceeded": True,
+                    "department": spend_department,
+                    "cap_usd": cap_usd,
+                    "spent_usd": spent_usd,
+                }))
+                return _resp(402, {
+                    "error": "budget_exceeded",
+                    "department": spend_department,
+                    "cap_usd": cap_usd,
+                    "spent_usd": spent_usd,
+                })
+        except Exception as e:
+            logger.warning(f"Budget check failed (fail-open): {e}")
 
     # Streaming — only supported for generate and research tools
     _stream_flag = body.get("stream", False)
@@ -235,6 +291,18 @@ def handle_tool_invocation(event):
             guardrail_applied=payload.get("guardrail_applied", False),
             cache_hit=False,
             department=department,
+        )
+
+        # Write spend record
+        spend_record_write(
+            table_name=SPEND_TABLE,
+            department=spend_department,
+            user_id=user_id,
+            tool=tool,
+            provider=payload.get("provider", provider_key),
+            model=payload.get("model", model_id),
+            input_tokens=payload.get("input_tokens", 0),
+            output_tokens=payload.get("output_tokens", 0),
         )
 
         # Cache the response
