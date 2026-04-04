@@ -36,9 +36,6 @@ from aws_cdk import (
     aws_apigateway as apigw,
 )
 from aws_cdk import (
-    aws_ec2 as ec2,
-)
-from aws_cdk import (
     aws_bedrock as bedrock,
 )
 from aws_cdk import (
@@ -52,6 +49,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_dynamodb as dynamodb,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
 )
 from aws_cdk import (
     aws_iam as iam,

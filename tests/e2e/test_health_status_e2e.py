@@ -8,8 +8,6 @@ E2E tests for /health and /status endpoints.
 import pytest
 import requests
 
-from tests.e2e.conftest import call
-
 pytestmark = pytest.mark.e2e
 
 

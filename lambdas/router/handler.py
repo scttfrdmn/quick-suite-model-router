@@ -32,8 +32,8 @@ from provider_interface import (
     cache_key,
     cache_put,
     emit_usage_metrics,
-    spend_record_write,
     spend_query_department_month,
+    spend_record_write,
 )
 
 logger = logging.getLogger(__name__)

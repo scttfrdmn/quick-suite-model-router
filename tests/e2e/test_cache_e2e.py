@@ -29,8 +29,8 @@ def require_cache(cache_table_name):
 class TestCacheE2E:
     def test_first_request_is_cache_miss(self, api, api_endpoint, require_cache):
         """First request with skip_cache=False and temp=0 is a cache miss."""
-        resp = call(api, api_endpoint, "analyze",
-                    {**_CACHE_PAYLOAD, "skip_cache": True})   # prime with skip to clear any stale
+        _resp = call(api, api_endpoint, "analyze",
+                     {**_CACHE_PAYLOAD, "skip_cache": True})   # prime with skip to clear any stale
         resp2 = call(api, api_endpoint, "analyze", _CACHE_PAYLOAD)
         assert resp2.status_code == 200
         # After a forced skip, second request may be a miss if nothing was written
@@ -63,7 +63,7 @@ class TestCacheE2E:
     def test_high_temperature_not_cached(self, api, api_endpoint, require_cache):
         """Requests with temperature > 0.3 are never cached."""
         payload = {**_CACHE_PAYLOAD, "temperature": 0.8}
-        r1 = call(api, api_endpoint, "analyze", payload)
+        _r1 = call(api, api_endpoint, "analyze", payload)
         r2 = call(api, api_endpoint, "analyze", payload)
         assert r2.status_code == 200
         assert r2.json().get("cached") is not True, \

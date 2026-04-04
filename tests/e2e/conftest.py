@@ -15,7 +15,6 @@ Run:
   AWS_PROFILE=aws QS_E2E_REGION=us-west-2 pytest tests/e2e/ -v -m e2e
 """
 
-import json
 import os
 
 import boto3

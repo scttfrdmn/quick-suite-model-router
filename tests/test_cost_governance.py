@@ -12,7 +12,6 @@ import json
 import os
 import sys
 import time
-from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
