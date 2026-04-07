@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-07
+
+### Added
+- **Issue #37: Dry-run mode** — Callers may set `"dry_run": true` in any request body to get a cost estimate without invoking any model or writing to the spend ledger. The response includes `dry_run: true`, `estimated_cost_usd` (float), `selected_provider`, `selected_model`, and `tokens_in_estimate`. All capability and context-window filters still apply — if no provider satisfies the request, the same 400 error is returned as in live mode. `compute_cost_usd()` from `provider_interface.py` is reused for the estimate; no new pricing logic.
+- **Issue #36: Per-user rate limiting** — New `lambdas/authorizer/handler.py` Lambda authorizer decodes the Cognito JWT payload, extracts the `sub` claim, and returns an IAM Allow policy with `usageIdentifierKey = sub`. API Gateway uses this key to enforce per-user throttle and quota against the per-user usage plan. CDK: when the `rate_limit_per_minute` context variable is set, a second usage plan (`PerUserRateLimitPlan`) is created alongside the existing global key-based plan, with `throttle.rate_limit = rpm / 60` (requests per second), `burst_limit = rpm * 2`, and a daily `quota.limit` from `rate_limit_per_day` context (default 1000). The authorizer Lambda is also deployed (CfnOutput: `CognitoJwtAuthorizerArn`); wire it into API Gateway as a custom TOKEN authorizer to activate per-user keying.
+
+### Tests
+- 8 new tests: `TestDryRunMode` (5) — model invoke not called in dry_run, correct fields returned, capability filter applies, no spend ledger write, omitted flag executes normally; `TestPerUserRateLimitingAuthorizer` (3) — `usageIdentifierKey` equals decoded sub claim, missing token raises Unauthorized, malformed JWT raises Unauthorized.
+
 ## [0.11.0] - 2026-04-07
 
 ### Added

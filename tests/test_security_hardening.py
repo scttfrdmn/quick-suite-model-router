@@ -128,7 +128,7 @@ class TestSafeLogging:
         }
 
         # Patch at the provider-selection level so we don't need full AWS setup
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             h.handler(event, None)
 
@@ -163,7 +163,7 @@ class TestSafeLogging:
             "headers": {"Content-Type": "application/json"},
         }
 
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             h.handler(event, None)
 
@@ -360,7 +360,7 @@ class TestContentTypeValidation:
             "headers": {"Content-Type": "text/plain"},
             "body": "not json",
         }
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             result = h.handle_tool_invocation(event)
         assert result["statusCode"] == 415
@@ -372,7 +372,7 @@ class TestContentTypeValidation:
             "headers": {"Content-Type": "multipart/form-data"},
             "body": "form-data",
         }
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             result = h.handle_tool_invocation(event)
         assert result["statusCode"] == 415
@@ -384,7 +384,7 @@ class TestContentTypeValidation:
             "headers": {"Content-Type": "application/json"},
             "body": json.dumps({"not_prompt": "x"}),
         }
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             result = h.handle_tool_invocation(event)
         assert result["statusCode"] != 415
@@ -396,7 +396,7 @@ class TestContentTypeValidation:
             "body": json.dumps({"not_prompt": "x"}),
             # no headers key
         }
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             result = h.handle_tool_invocation(event)
         assert result["statusCode"] != 415
@@ -408,7 +408,7 @@ class TestContentTypeValidation:
             "headers": {"content-type": "text/xml"},
             "body": "<xml/>",
         }
-        with patch.object(h, "select_provider", return_value=(None, None)), \
+        with patch.object(h, "select_provider", return_value=(None, None, "")), \
              patch.object(h, "_load_budget_caps", return_value={}):
             result = h.handle_tool_invocation(event)
         assert result["statusCode"] == 415

@@ -1039,3 +1039,124 @@ class TestCapabilityAndContextRouting:
         assert result["statusCode"] == 200
         body = json.loads(result["body"])
         assert body["provider"] == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# Dry-run mode (#37)
+# ---------------------------------------------------------------------------
+
+class TestDryRunMode:
+    def test_dry_run_returns_estimate_without_invoking_model(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock"}), \
+             patch.object(h.lambda_client, "invoke") as mock_invoke:
+            event = {"tool": "analyze", "body": json.dumps({"prompt": "Analyze this", "dry_run": True})}
+            result = h.handle_tool_invocation(event)
+        mock_invoke.assert_not_called()
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["dry_run"] is True
+        assert "estimated_cost_usd" in body
+        assert isinstance(body["estimated_cost_usd"], float)
+
+    def test_dry_run_response_includes_provider_model_tokens(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock"}), \
+             patch.object(h.lambda_client, "invoke"):
+            event = {"tool": "analyze", "body": json.dumps({"prompt": "Hello world", "dry_run": True})}
+            result = h.handle_tool_invocation(event)
+        body = json.loads(result["body"])
+        assert body["selected_provider"] == "bedrock"
+        assert "selected_model" in body
+        assert body["tokens_in_estimate"] > 0
+
+    def test_dry_run_capability_filter_still_applies(self, provider_functions, provider_secrets):
+        cfg = _caps_routing_config()
+        h = _load_handler(cfg, provider_functions, provider_secrets)
+        # openai lacks "long_context" — no provider satisfies it
+        with patch.object(h, "_available_providers", {"openai"}):
+            event = {"tool": "analyze", "body": json.dumps({
+                "prompt": "Hello", "dry_run": True, "capabilities": ["long_context"]
+            })}
+            result = h.handle_tool_invocation(event)
+        assert result["statusCode"] == 400
+        body = json.loads(result["body"])
+        assert body["code"] == "unsatisfiable_capabilities"
+
+    def test_dry_run_no_spend_ledger_write(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        with patch.object(h, "_available_providers", {"bedrock"}), \
+             patch.object(h.lambda_client, "invoke"), \
+             patch.object(h, "spend_record_write") as mock_spend:
+            event = {"tool": "analyze", "body": json.dumps({"prompt": "Hello", "dry_run": True})}
+            h.handle_tool_invocation(event)
+        mock_spend.assert_not_called()
+
+    def test_dry_run_omitted_executes_normally(self, routing_config, provider_functions, provider_secrets):
+        h = _load_handler(routing_config, provider_functions, provider_secrets)
+        success = {
+            "content": "Normal result", "provider": "bedrock",
+            "model": "anthropic.claude-sonnet-4-20250514-v1:0",
+            "input_tokens": 50, "output_tokens": 20,
+            "guardrail_applied": False, "guardrail_blocked": False,
+        }
+        with patch.object(h, "_available_providers", {"bedrock"}), \
+             patch.object(h.lambda_client, "invoke", return_value=_make_lambda_payload(success)), \
+             patch.object(h, "spend_record_write"):
+            event = {"tool": "analyze", "body": json.dumps({"prompt": "Hello", "temperature": 0.5})}
+            result = h.handle_tool_invocation(event)
+        body = json.loads(result["body"])
+        assert body.get("dry_run") is None
+        assert body["content"] == "Normal result"
+
+
+# ---------------------------------------------------------------------------
+# Per-user rate limiting — Lambda authorizer (#36)
+# ---------------------------------------------------------------------------
+
+class TestPerUserRateLimitingAuthorizer:
+    def _import_authorizer(self):
+        import importlib.util
+        authorizer_path = os.path.join(
+            os.path.dirname(__file__), "..", "lambdas", "authorizer", "handler.py"
+        )
+        spec = importlib.util.spec_from_file_location("authorizer_handler", authorizer_path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _make_jwt(self, payload: dict) -> str:
+        """Build a minimally-valid JWT structure (unsigned) for testing."""
+        import base64 as _b64
+        header = _b64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+        body_part = _b64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+        return f"{header}.{body_part}.fakesig"
+
+    def test_authorizer_context_includes_usage_identifier_key(self):
+        mod = self._import_authorizer()
+        claims = {"sub": "user-abc-123", "email": "test@example.edu"}
+        token = self._make_jwt(claims)
+        event = {
+            "authorizationToken": f"Bearer {token}",
+            "methodArn": "arn:aws:execute-api:us-east-1:123456789012:abcdef/prod/POST/tools/analyze",
+        }
+        result = mod.handler(event, None)
+        assert result["usageIdentifierKey"] == "user-abc-123"
+        assert result["context"]["sub"] == "user-abc-123"
+
+    def test_authorizer_missing_token_raises_unauthorized(self):
+        import pytest as _pytest
+        mod = self._import_authorizer()
+        event = {"methodArn": "arn:aws:execute-api:us-east-1:123456:api/prod/POST/tools/analyze"}
+        with _pytest.raises(Exception, match="Unauthorized"):
+            mod.handler(event, None)
+
+    def test_authorizer_malformed_jwt_raises_unauthorized(self):
+        import pytest as _pytest
+        mod = self._import_authorizer()
+        event = {
+            "authorizationToken": "Bearer not.valid",
+            "methodArn": "arn:aws:execute-api:us-east-1:123456:api/prod/POST/tools/analyze",
+        }
+        with _pytest.raises(Exception, match="Unauthorized"):
+            mod.handler(event, None)

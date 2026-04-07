@@ -293,6 +293,17 @@ def handle_tool_invocation(event):
             })
         return _resp(503, {"error": "No providers available", "tool": tool})
 
+    # Dry-run mode: return cost estimate without invoking any model or writing spend ledger
+    if body.get("dry_run"):
+        estimated_cost = compute_cost_usd(model_id, context_budget, max_tokens)
+        return _resp(200, {
+            "dry_run": True,
+            "estimated_cost_usd": estimated_cost,
+            "selected_provider": provider_key,
+            "selected_model": model_id,
+            "tokens_in_estimate": context_budget,
+        })
+
     # Check cache (only for deterministic-ish requests)
     _skip = body.get("skip_cache", False)
     skip_cache = (_skip.lower() in ("true", "1", "yes") if isinstance(_skip, str) else bool(_skip)) or temperature > 0.3

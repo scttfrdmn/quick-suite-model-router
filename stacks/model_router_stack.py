@@ -801,6 +801,58 @@ class ModelRouterStack(Stack):
         usage_plan.add_api_stage(stage=api.deployment_stage)
 
         # -----------------------------------------------------------------
+        # Per-user rate limiting (optional — enable with CDK context)
+        # When rate_limit_per_minute is set, a second usage plan is created
+        # keyed on the Cognito sub claim via the Lambda authorizer's
+        # usageIdentifierKey. The Lambda authorizer is also deployed so that
+        # API Gateway can forward usageIdentifierKey to the usage plan.
+        # -----------------------------------------------------------------
+        rpm = self.node.try_get_context("rate_limit_per_minute")
+        if rpm is not None:
+            rpm = int(rpm)
+            rpd = int(self.node.try_get_context("rate_limit_per_day") or 1000)
+
+            authorizer_fn = lambda_.Function(
+                self,
+                "CognitoJwtAuthorizer",
+                function_name=f"{prefix}-cognito-jwt-authorizer",
+                runtime=lambda_.Runtime.PYTHON_3_12,
+                handler="handler.handler",
+                code=lambda_.Code.from_asset(
+                    str(Path(__file__).parent.parent / "lambdas" / "authorizer")
+                ),
+                environment={
+                    "COGNITO_USER_POOL_ID": user_pool.user_pool_id,
+                },
+                log_retention=logs.RetentionDays.THREE_MONTHS,
+            )
+
+            per_user_usage_plan = api.add_usage_plan(
+                "PerUserRateLimitPlan",
+                name=f"{prefix}-per-user-rate-limit",
+                throttle=apigw.ThrottleSettings(
+                    rate_limit=rpm / 60,  # requests per second
+                    burst_limit=rpm * 2,
+                ),
+                quota=apigw.QuotaSettings(
+                    limit=rpd,
+                    period=apigw.Period.DAY,
+                ),
+            )
+            per_user_usage_plan.add_api_stage(stage=api.deployment_stage)
+
+            CfnOutput(
+                self, "PerUserRateLimitPlanId",
+                value=per_user_usage_plan.usage_plan_id,
+                description="Per-user rate limit usage plan ID",
+            )
+            CfnOutput(
+                self, "CognitoJwtAuthorizerArn",
+                value=authorizer_fn.function_arn,
+                description="Lambda authorizer ARN (wire into API Gateway custom authorizer for per-user rate limiting)",
+            )
+
+        # -----------------------------------------------------------------
         # CloudWatch Dashboard
         # -----------------------------------------------------------------
         dashboard = cw.Dashboard(
