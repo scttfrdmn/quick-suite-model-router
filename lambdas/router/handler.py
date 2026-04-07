@@ -20,10 +20,12 @@ Streaming (v0.6.0):
   Non-streaming callers (stream omitted or false) are unaffected.
 """
 
+import hashlib
 import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
@@ -31,6 +33,7 @@ from provider_interface import (
     cache_get,
     cache_key,
     cache_put,
+    compute_cost_usd,
     emit_usage_metrics,
     spend_query_department_month,
     spend_record_write,
@@ -79,6 +82,10 @@ CACHE_TABLE = os.environ.get("CACHE_TABLE", "")
 CACHE_TTL = int(os.environ.get("CACHE_TTL_MINUTES", "60"))
 SPEND_TABLE = os.environ.get("SPEND_TABLE", "")
 BUDGET_CAPS_SECRET_ARN = os.environ.get("BUDGET_CAPS_SECRET_ARN", "")
+# When true, budget cap load failure raises (fail-closed) instead of proceeding (fail-open).
+BUDGET_CAPS_REQUIRED = os.environ.get("BUDGET_CAPS_REQUIRED", "").lower() in ("true", "1", "yes")
+CORS_ALLOWED_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN", "*")
+CONTENT_AUDIT_LOGGING = os.environ.get("CONTENT_AUDIT_LOGGING", "").lower() in ("true", "1", "yes")
 
 # Budget caps: loaded once at startup from Secrets Manager (module-level cache).
 # Maps department -> monthly_usd_cap. Empty dict = no caps configured.
@@ -87,7 +94,12 @@ _budget_caps_loaded = False
 
 
 def _load_budget_caps() -> dict:
-    """Load budget caps from Secrets Manager. Fail-open on any error."""
+    """Load budget caps from Secrets Manager.
+
+    Fail-open by default: on error, returns empty caps and resets the loaded
+    flag so the next invocation retries. Set BUDGET_CAPS_REQUIRED=true to
+    fail-closed (raises, causing Lambda to return a 500).
+    """
     global _budget_caps, _budget_caps_loaded
     if _budget_caps_loaded:
         return _budget_caps
@@ -99,6 +111,9 @@ def _load_budget_caps() -> dict:
         _budget_caps = json.loads(resp["SecretString"])
         logger.info(json.dumps({"budget_caps_loaded": True, "departments": list(_budget_caps.keys())}))
     except Exception as e:
+        _budget_caps_loaded = False  # allow retry on next invocation
+        if BUDGET_CAPS_REQUIRED:
+            raise RuntimeError("Budget caps are required but failed to load") from e
         logger.warning(f"Budget caps load failed (fail-open): {e}")
     return _budget_caps
 
@@ -108,7 +123,12 @@ _PROVIDER_CACHE_TTL = 300
 
 
 def handler(event, context):
-    logger.info(json.dumps(event, default=str))
+    logger.info(json.dumps({
+        "tool": event.get("tool"),
+        "path": event.get("path"),
+        "httpMethod": event.get("httpMethod"),
+        "requestId": event.get("requestContext", {}).get("requestId"),
+    }, default=str))
 
     http_method = event.get("httpMethod", "POST")
     if http_method == "GET" or event.get("resource") == "/status":
@@ -142,6 +162,12 @@ def handle_status():
 # ------------------------------------------------------------------
 
 def handle_tool_invocation(event):
+    # Reject non-JSON Content-Type early (missing header is allowed for direct Lambda invocations)
+    headers = event.get("headers") or {}
+    ct = headers.get("Content-Type") or headers.get("content-type") or ""
+    if ct and "application/json" not in ct.lower():
+        return _resp(415, {"error": "Content-Type must be application/json"})
+
     tool = event.get("tool")
     if not tool:
         path = event.get("path", "")
@@ -178,19 +204,27 @@ def handle_tool_invocation(event):
     system_prompt = _system_prompt(tool)
 
     # department/user_id: used for routing overrides, metrics, and spend ledger.
-    # Store raw value for routing (empty string = use global routing) but
-    # default to "default"/"anonymous" for spend ledger writes.
-    department_raw = str(body.get("department") or "").strip()
+    # Prefer Cognito JWT claims injected by API Gateway authorizer;
+    # fall back to body values for direct Lambda invocation (testing / development).
+    _claims = (
+        event.get("requestContext", {})
+             .get("authorizer", {})
+             .get("claims", {})
+    )
+    if _claims:
+        user_id = (_claims.get("sub") or _claims.get("cognito:username") or "anonymous")
+        department_raw = (_claims.get("custom:department") or "").strip()
+    else:
+        department_raw = str(body.get("department") or "").strip()
+        user_id = str(body.get("user_id") or "anonymous").strip() or "anonymous"
     department = department_raw  # used for routing + metrics (empty = global)
     spend_department = department_raw or "default"
-    user_id = str(body.get("user_id") or "anonymous").strip() or "anonymous"
 
     # Budget cap enforcement
     caps = _load_budget_caps()
     if caps and spend_department in caps:
         cap_usd = float(caps[spend_department])
         try:
-            from datetime import datetime, timezone
             month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
             spent_usd = spend_query_department_month(SPEND_TABLE, spend_department, month_prefix)
             if spent_usd >= cap_usd:
@@ -308,6 +342,32 @@ def handle_tool_invocation(event):
             input_tokens=payload.get("input_tokens", 0),
             output_tokens=payload.get("output_tokens", 0),
         )
+
+        # Content audit log (HIPAA audit trail — hashed only, no raw text)
+        if CONTENT_AUDIT_LOGGING:
+            try:
+                logger.info(json.dumps({
+                    "audit_log": "content",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "request_id": event.get("requestContext", {}).get("requestId", ""),
+                    "tool": tool,
+                    "provider": payload.get("provider", provider_key),
+                    "model": payload.get("model", model_id),
+                    "tokens_in": payload.get("input_tokens", 0),
+                    "tokens_out": payload.get("output_tokens", 0),
+                    "cost_usd": compute_cost_usd(
+                        payload.get("model", model_id),
+                        payload.get("input_tokens", 0),
+                        payload.get("output_tokens", 0),
+                    ),
+                    "department": spend_department,
+                    "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
+                    "response_hash": hashlib.sha256(
+                        payload.get("content", "").encode()
+                    ).hexdigest(),
+                }))
+            except Exception as _audit_err:
+                logger.warning(f"Content audit log failed: {_audit_err}")
 
         # Cache the response
         if CACHE_TABLE and not skip_cache and not payload.get("error") and not payload.get("guardrail_blocked"):
@@ -492,7 +552,7 @@ def _resp(code: int, body: dict) -> dict:
         "statusCode": code,
         "headers": {
             "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": CORS_ALLOWED_ORIGIN,
         },
         "body": json.dumps(body, default=str),
     }

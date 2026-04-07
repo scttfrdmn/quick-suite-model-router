@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is **quicksuite-model-router** — a CDK-deployable reference
+This is **quick-suite-router** — a CDK-deployable reference
 architecture that extends Amazon Quick Suite with multi-provider LLM
 access through Bedrock AgentCore Gateway.
 
@@ -19,17 +19,17 @@ subscription becomes the on-ramp to AWS, not the competitor.
 Work is tracked in GitHub — not in local files. Do not add TODO lists or task
 tracking to CLAUDE.md or create TODO.md files.
 
-- **Issues:** https://github.com/scttfrdmn/quick-suite-model-router/issues
-- **Milestones:** https://github.com/scttfrdmn/quick-suite-model-router/milestones
+- **Issues:** https://github.com/scttfrdmn/quick-suite-router/issues
+- **Milestones:** https://github.com/scttfrdmn/quick-suite-router/milestones
 - **Project board:** https://github.com/users/scttfrdmn/projects/44
 - **Changelog:** CHANGELOG.md (keepachangelog format, semver 2.0)
 
 To report a bug or propose a feature, open a GitHub Issue with the appropriate
 label. All release planning happens via milestones.
 
-## Current State — v0.8.0
+## Current State — v0.10.0
 
-### File Inventory (29 files)
+### File Inventory (33 files)
 
 **Code:**
 - `app.py` — CDK entry point
@@ -40,16 +40,19 @@ label. All release planning happens via milestones.
   Lambdas, API Gateway, Bedrock Guardrail, DynamoDB cache + spend ledger, CloudWatch dashboard,
   optional VPC with private endpoints)
 - `lambdas/router/handler.py` — task classification, provider selection,
-  cache check, fallback logic, spend record write, budget cap enforcement, PHI routing filter
+  cache check, fallback logic, spend record write, budget cap enforcement, PHI routing filter,
+  Cognito claims extraction, CORS origin control, content audit logging (SHA-256 hashes)
 - `lambdas/common/python/provider_interface.py` — shared governance utilities
   (guardrails, CloudWatch metrics, DynamoDB cache helpers, spend ledger write,
   cost_usd computation, spend department query)
 - `lambdas/query-spend/handler.py` — AgentCore Lambda target; queries qs-router-spend
-  and aggregates cost by department/user/tool/date
+  and aggregates cost by department/user/tool/date; enforces Cognito claims-based authorization
 - `lambdas/providers/bedrock_provider.py` — Bedrock Converse + converse_stream API
 - `lambdas/providers/anthropic_provider.py` — Anthropic Messages API (blocking + streaming)
 - `lambdas/providers/openai_provider.py` — OpenAI Chat Completions API (blocking + streaming)
 - `lambdas/providers/gemini_provider.py` — Google Generative AI API (blocking + streaming)
+- `lambdas/guardrail-version-updater/handler.py` — internal Lambda; updates SSM param for guardrail version without redeploy
+- `lambdas/key-rotation-checker/handler.py` — internal Lambda; weekly check that provider API key secrets have been rotated within `KEY_ROTATION_MAX_AGE_DAYS`; emits `KeyRotationOverdue` CloudWatch metric
 
 **Config:**
 - `config/routing_config.example.yaml` — provider preference lists per tool

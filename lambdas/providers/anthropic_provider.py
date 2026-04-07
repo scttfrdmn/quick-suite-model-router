@@ -32,7 +32,22 @@ logger.setLevel(logging.INFO)
 secrets = boto3.client("secretsmanager")
 SECRET_ARN = os.environ.get("SECRET_ARN", "")
 GUARDRAIL_ID = os.environ.get("GUARDRAIL_ID", "")
-GUARDRAIL_VERSION = os.environ.get("GUARDRAIL_VERSION", "DRAFT")
+_GUARDRAIL_VERSION_SSM_PARAM = os.environ.get("GUARDRAIL_VERSION_SSM_PARAM", "")
+_GUARDRAIL_VERSION_FALLBACK = os.environ.get("GUARDRAIL_VERSION", "DRAFT")
+
+
+def _load_guardrail_version() -> str:
+    if _GUARDRAIL_VERSION_SSM_PARAM:
+        try:
+            ssm = boto3.client("ssm")
+            resp = ssm.get_parameter(Name=_GUARDRAIL_VERSION_SSM_PARAM)
+            return resp["Parameter"]["Value"]
+        except Exception as e:
+            logger.warning(f"SSM guardrail version read failed (using env fallback): {e}")
+    return _GUARDRAIL_VERSION_FALLBACK
+
+
+GUARDRAIL_VERSION = _load_guardrail_version()
 API_URL = "https://api.anthropic.com/v1/messages"
 API_STREAM_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
@@ -42,17 +57,39 @@ _api_key_fetched_at = 0.0
 _KEY_TTL = 3600
 
 
+_VALID_ROLES = {"user", "assistant", "system"}
+_MAX_HISTORY_MESSAGES = 50
+_MAX_MESSAGE_CONTENT_CHARS = 4_000
+
+
 def _parse_context(context_str: str) -> list | None:
-    """Return parsed message list if context is structured JSON, else None."""
+    """Return a validated message list from structured JSON context, else None.
+
+    Validates role values, content type and length, and array bounds to prevent
+    prompt injection via crafted chat history (#46).
+    """
     if not context_str:
         return None
     try:
         parsed = json.loads(context_str)
-        if isinstance(parsed, list) and all("role" in m for m in parsed):
-            return parsed
     except (json.JSONDecodeError, TypeError):
-        pass
-    return None
+        return None
+    if not isinstance(parsed, list):
+        return None
+    if len(parsed) > _MAX_HISTORY_MESSAGES:
+        parsed = parsed[-_MAX_HISTORY_MESSAGES:]  # keep most recent messages
+    validated = []
+    for m in parsed:
+        if not isinstance(m, dict):
+            return None  # malformed entry — reject entire history
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if role not in _VALID_ROLES:
+            return None  # unknown role — reject
+        if not isinstance(content, str) or len(content) > _MAX_MESSAGE_CONTENT_CHARS:
+            return None  # non-string or oversized content — reject
+        validated.append({"role": role, "content": content})
+    return validated if validated else None
 
 
 def handler(event, context):

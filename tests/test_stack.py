@@ -54,9 +54,9 @@ def test_cache_table_absent_when_disabled(no_cache_stack):
 
 
 def test_all_provider_lambdas_present(default_stack):
-    """Router + 4 providers + query-spend = 6 app Lambdas. CDK log-retention adds one more."""
-    # 6 application Lambdas + 1 CDK-managed log retention custom resource Lambda
-    default_stack.resource_count_is("AWS::Lambda::Function", 7)
+    """Router + 4 providers + query-spend + guardrail-updater + key-rotation-checker = 8 app Lambdas. CDK log-retention adds one more."""
+    # 8 application Lambdas + 1 CDK-managed log retention custom resource Lambda
+    default_stack.resource_count_is("AWS::Lambda::Function", 9)
 
 
 def test_provider_lambda_names(default_stack):
@@ -114,3 +114,19 @@ def test_cognito_user_pool_present(default_stack):
 def test_cloudwatch_dashboard_present(default_stack):
     """CloudWatch usage dashboard is present."""
     default_stack.resource_count_is("AWS::CloudWatch::Dashboard", 1)
+
+
+def test_guardrail_version_updater_lambda_present(default_stack):
+    """Guardrail version updater Lambda is created."""
+    default_stack.has_resource_properties(
+        "AWS::Lambda::Function",
+        {"FunctionName": Match.string_like_regexp(".*guardrail-version-updater.*")},
+    )
+
+
+def test_guardrail_version_ssm_param_present(default_stack):
+    """SSM parameter for guardrail version is created."""
+    default_stack.has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/quick-suite/router/guardrail-version"},
+    )

@@ -42,13 +42,52 @@ def _get_table():
 
 
 def handler(event, context):
-    logger.info(json.dumps(event, default=str))
+    logger.info(json.dumps({
+        "group_by": event.get("group_by"),
+        "requestId": event.get("requestContext", {}).get("requestId"),
+    }, default=str))
 
     if not SPEND_TABLE:
         return {"results": [], "total_cost_usd": 0.0, "error": "SPEND_TABLE not configured"}
 
-    department = event.get("department") or None
-    user_id = event.get("user_id") or None
+    # Authorization: extract caller identity from Cognito JWT claims.
+    # Non-admins are restricted to their own department and user_id.
+    # No claims = direct Lambda invocation (backward compatible / test path).
+    _claims = (
+        event.get("requestContext", {})
+             .get("authorizer", {})
+             .get("claims", {})
+    )
+    if _claims:
+        caller_sub = _claims.get("sub") or _claims.get("cognito:username") or ""
+        caller_dept = (_claims.get("custom:department") or "").strip()
+        groups_raw = _claims.get("cognito:groups", "") or ""
+        is_admin = any(g in str(groups_raw) for g in ("finance_admin", "admin"))
+
+        if not is_admin:
+            requested_dept = event.get("department") or ""
+            if requested_dept and requested_dept != caller_dept:
+                return {
+                    "error": f"Not authorized to query spend for department '{requested_dept}'",
+                    "results": [],
+                    "total_cost_usd": 0.0,
+                }
+            department = caller_dept or requested_dept or None
+            requested_uid = event.get("user_id") or ""
+            if requested_uid and requested_uid != caller_sub:
+                return {
+                    "error": f"Not authorized to query spend for user '{requested_uid}'",
+                    "results": [],
+                    "total_cost_usd": 0.0,
+                }
+            user_id = caller_sub or requested_uid or None
+        else:
+            department = event.get("department") or None
+            user_id = event.get("user_id") or None
+    else:
+        department = event.get("department") or None
+        user_id = event.get("user_id") or None
+
     date_range = event.get("date_range") or {}
     group_by = event.get("group_by", "department")
 

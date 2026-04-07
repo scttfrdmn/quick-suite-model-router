@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-06
+
+### Security
+- Fixed full request body logged to CloudWatch: `logger.info(json.dumps(event))` in router and query-spend handlers dumped the entire Lambda event (including `prompt`, `context`, `user_id`) at INFO level; replaced with a safe structured subset (`tool`, `path`, `httpMethod`, `requestId`) that never includes request body fields (closes #44)
+- Fixed Bedrock IAM policy allowing InvokeModel in any region: `arn:aws:bedrock:*::foundation-model/*` wildcard was replaced with `arn:aws:bedrock:{region}::foundation-model/*` scoped to the stack's deployment region (closes #45)
+- Fixed prompt injection via unvalidated chat history in `context` field: `_parse_context()` in all three non-Bedrock providers (OpenAI, Anthropic, Gemini) now validates role values against `{"user", "assistant", "system"}`, enforces `str` content type, caps per-message content at 4,000 chars, and truncates history arrays exceeding 50 messages; any malformed entry rejects the entire history (closes #46)
+- Fixed budget caps loaded once at cold start with fail-open on error: `_budget_caps_loaded` is now reset to `False` on Secrets Manager failure so the next invocation retries; new `BUDGET_CAPS_REQUIRED` env var / `budget_caps_required` CDK context flag enables fail-closed mode (raises, causing Lambda 500) for environments where budget enforcement is mandatory (closes #47)
+- Fixed spend ledger DynamoDB table missing deletion protection and PITR: `qs-router-spend` table now has `point_in_time_recovery=True` and `deletion_protection=True` (closes #48)
+- Added key rotation enforcement: new `key-rotation-checker` Lambda runs weekly via EventBridge Scheduler, checks each provider API key secret's `LastChangedDate` against `KEY_ROTATION_MAX_AGE_DAYS` (default 90, CDK context var), and emits a `KeyRotationOverdue` CloudWatch metric + ERROR log for overdue secrets (closes #49)
+- Fixed missing Content-Type validation: `handle_tool_invocation()` now checks the `Content-Type` / `content-type` header and returns HTTP 415 if set to a non-JSON MIME type; missing header is allowed for backward compatibility with direct Lambda invocations (closes #50)
+
+### Added
+- `lambdas/key-rotation-checker/handler.py`: lightweight internal Lambda (~70 lines) that audits API key secret ages and emits CloudWatch metrics
+- `tests/test_security_hardening.py`: 33 new tests covering all seven security fixes (safe logging, context validation, budget caps retry, content-type rejection, key rotation checker, CDK Bedrock IAM scoping, PITR/deletion protection)
+
+## [0.9.0] - 2026-04-06
+
+### Security
+- Fixed CORS wildcard: `Access-Control-Allow-Origin: *` was hardcoded on all responses; replaced with `CORS_ALLOWED_ORIGIN` env var (default `*` with CDK warning); set `cors_allowed_origin` in CDK context to restrict to your Quick Suite domain (closes #43)
+- Fixed spend ledger authorization bypass: `department` and `user_id` were taken from the request body, allowing any authenticated caller to attribute spend to another department; now extracted from Cognito JWT claims (`sub`, `custom:department`) injected by API Gateway; falls back to body values for direct Lambda invocation (testing/development) (closes #41)
+- Fixed `query-spend` Lambda exposing org-wide cost data: any caller could query any department's spend without restriction; non-admin callers (no `finance_admin`/`admin` in `cognito:groups`) are now restricted to their own department and user_id; admin callers are unrestricted; no-claims path (direct Lambda invocation) is backward-compatible (closes #42)
+
+### Added
+- Content audit logging (`#33`): when `enable_content_logging=true` CDK context flag is set, router Lambda emits a structured JSON log record after every successful provider call with fields `audit_log: "content"`, `timestamp`, `request_id`, `tool`, `provider`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `department`, `prompt_hash` (SHA-256), `response_hash` (SHA-256); raw text is never logged; CDK creates dedicated `/quick-suite/router/content-audit` log group with 1-year retention (closes #33)
+- Guardrail version management via SSM (`#32`): all four provider Lambdas now read the active guardrail version from SSM parameter `/quick-suite/router/guardrail-version` at cold start via `_load_guardrail_version()`; falls back to `GUARDRAIL_VERSION` env var on SSM error; new `guardrail-version-updater` Lambda accepts `{"version": "N"}` and updates the SSM parameter without requiring a `cdk deploy`; CDK grants SSM read to all provider Lambdas and SSM write to the updater Lambda (closes #32)
+
+### Changed
+- `_load_handler()` in tests now supports `extra_env` dict for env var overrides (used by CORS and content logging tests)
+
 ## [0.8.0] - 2026-04-02
 
 ### Added

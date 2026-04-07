@@ -54,6 +54,12 @@ from aws_cdk import (
     aws_ec2 as ec2,
 )
 from aws_cdk import (
+    aws_events as events,
+)
+from aws_cdk import (
+    aws_events_targets as events_targets,
+)
+from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
@@ -70,6 +76,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_sns_subscriptions as sns_subs,
+)
+from aws_cdk import (
+    aws_ssm as ssm,
 )
 from constructs import Construct
 
@@ -88,6 +97,21 @@ class ModelRouterStack(Stack):
             self.node.try_get_context("cache_ttl_minutes") or 60
         )
         guardrail_version = self.node.try_get_context("guardrail_version") or "DRAFT"
+
+        # CORS — restrict API Gateway CORS origin (default "*" with a warning)
+        cors_allowed_origin = self.node.try_get_context("cors_allowed_origin") or "*"
+        if cors_allowed_origin == "*":
+            cdk.Annotations.of(self).add_warning(
+                "cors_allowed_origin is set to '*'. Set cors_allowed_origin in cdk.json "
+                "to restrict CORS to your Quick Suite domain."
+            )
+
+        # Content audit logging — emit SHA-256-hashed prompt/response to CloudWatch
+        enable_content_logging_raw = self.node.try_get_context("enable_content_logging")
+        enable_content_logging = (
+            enable_content_logging_raw is True
+            or str(enable_content_logging_raw).lower() == "true"
+        )
 
         # VPC flag — when true, Lambdas run inside a VPC with private endpoints
         # for S3, DynamoDB, and Secrets Manager. No internet egress.
@@ -321,6 +345,19 @@ class ModelRouterStack(Stack):
         )
 
         # -----------------------------------------------------------------
+        # SSM Parameter — active Bedrock Guardrail version
+        # Provider Lambdas read this at cold start so version can be changed
+        # without a CDK redeploy (use guardrail-version-updater Lambda).
+        # -----------------------------------------------------------------
+        guardrail_version_param = ssm.StringParameter(
+            self,
+            "GuardrailVersionParam",
+            parameter_name="/quick-suite/router/guardrail-version",
+            string_value=guardrail_version,
+            description="Active Bedrock Guardrail version for Quick Suite router",
+        )
+
+        # -----------------------------------------------------------------
         # DynamoDB Response Cache (optional)
         # -----------------------------------------------------------------
         cache_table = None
@@ -355,6 +392,8 @@ class ModelRouterStack(Stack):
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=RemovalPolicy.RETAIN,
+            point_in_time_recovery=True,    # PITR — enables 35-day point-in-time restore (#48)
+            deletion_protection=True,       # blocks accidental table deletion (#48)
             time_to_live_attribute="expires_at",
         )
 
@@ -402,8 +441,9 @@ class ModelRouterStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    "arn:aws:bedrock:*::foundation-model/*",
-                    "arn:aws:bedrock:*:*:inference-profile/*",
+                    # Scoped to deployment region — prevents cross-region model invocation (#45)
+                    f"arn:aws:bedrock:{self.region}::foundation-model/*",
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/*",
                 ],
             )
         )
@@ -431,12 +471,14 @@ class ModelRouterStack(Stack):
             environment={
                 "GUARDRAIL_ID": guardrail.attr_guardrail_id,
                 "GUARDRAIL_VERSION": guardrail_version,
+                "GUARDRAIL_VERSION_SSM_PARAM": guardrail_version_param.parameter_name,
             },
             log_retention=logs.RetentionDays.ONE_MONTH,
             vpc=lambda_vpc,
             vpc_subnets=lambda_vpc_subnets,
             security_groups=lambda_security_groups,
         )
+        guardrail_version_param.grant_read(provider_lambdas["bedrock"])
 
         # --- External providers (Anthropic, OpenAI, Gemini) ---
         for provider_name in ["anthropic", "openai", "gemini"]:
@@ -455,6 +497,7 @@ class ModelRouterStack(Stack):
                     "SECRET_ARN": secrets[provider_name].secret_arn,
                     "GUARDRAIL_ID": guardrail.attr_guardrail_id,
                     "GUARDRAIL_VERSION": guardrail_version,
+                    "GUARDRAIL_VERSION_SSM_PARAM": guardrail_version_param.parameter_name,
                 },
                 log_retention=logs.RetentionDays.ONE_MONTH,
                 vpc=lambda_vpc,
@@ -468,6 +511,7 @@ class ModelRouterStack(Stack):
                     resources=[guardrail.attr_guardrail_arn],
                 )
             )
+            guardrail_version_param.grant_read(fn)
             provider_lambdas[provider_name] = fn
 
         # -----------------------------------------------------------------
@@ -486,6 +530,21 @@ class ModelRouterStack(Stack):
         for secret in secrets.values():
             secret.grant_read(router_role)
 
+        # Content audit log group (created only when enable_content_logging=true)
+        if enable_content_logging:
+            logs.LogGroup(
+                self,
+                "ContentAuditLogGroup",
+                log_group_name="/quick-suite/router/content-audit",
+                retention=logs.RetentionDays.ONE_YEAR,
+                removal_policy=RemovalPolicy.RETAIN,
+            )
+
+        budget_caps_required = (
+            self.node.try_get_context("budget_caps_required") is True
+            or str(self.node.try_get_context("budget_caps_required") or "").lower() == "true"
+        )
+
         router_env = {
             "ROUTING_CONFIG": json.dumps(routing_config),
             "PROVIDER_FUNCTIONS": json.dumps(
@@ -498,7 +557,12 @@ class ModelRouterStack(Stack):
             "CACHE_TTL_MINUTES": str(cache_ttl_minutes),
             "SPEND_TABLE": spend_table.table_name,
             "BUDGET_CAPS_SECRET_ARN": budget_caps_secret_arn,
+            "CORS_ALLOWED_ORIGIN": cors_allowed_origin,
         }
+        if budget_caps_required:
+            router_env["BUDGET_CAPS_REQUIRED"] = "true"
+        if enable_content_logging:
+            router_env["CONTENT_AUDIT_LOGGING"] = "true"
 
         router_fn = lambda_.Function(
             self,
@@ -555,6 +619,85 @@ class ModelRouterStack(Stack):
             security_groups=lambda_security_groups,
         )
         spend_table.grant_read_data(query_spend_fn)
+
+        # -----------------------------------------------------------------
+        # Guardrail Version Updater Lambda (internal — not an AgentCore tool)
+        # Allows updating the active guardrail version without a stack redeploy.
+        # -----------------------------------------------------------------
+        guardrail_updater_fn = lambda_.Function(
+            self,
+            "GuardrailVersionUpdater",
+            function_name=f"{prefix}-guardrail-version-updater",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset("lambdas/guardrail-version-updater"),
+            timeout=Duration.seconds(10),
+            memory_size=128,
+            tracing=lambda_.Tracing.ACTIVE,
+            environment={
+                "GUARDRAIL_VERSION_SSM_PARAM": guardrail_version_param.parameter_name,
+            },
+            log_retention=logs.RetentionDays.ONE_MONTH,
+            vpc=lambda_vpc,
+            vpc_subnets=lambda_vpc_subnets,
+            security_groups=lambda_security_groups,
+        )
+        guardrail_version_param.grant_write(guardrail_updater_fn)
+
+        # -----------------------------------------------------------------
+        # Key Rotation Checker Lambda (internal — runs weekly via EventBridge)
+        # Emits KeyRotationOverdue CloudWatch metric if any provider API key
+        # secret has not been rotated within key_rotation_max_age_days (#49).
+        # -----------------------------------------------------------------
+        key_rotation_max_age_days = int(
+            self.node.try_get_context("key_rotation_max_age_days") or 90
+        )
+        key_rotation_checker_fn = lambda_.Function(
+            self,
+            "KeyRotationChecker",
+            function_name=f"{prefix}-key-rotation-checker",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=lambda_.Code.from_asset("lambdas/key-rotation-checker"),
+            timeout=Duration.seconds(30),
+            memory_size=128,
+            tracing=lambda_.Tracing.ACTIVE,
+            environment={
+                "PROVIDER_SECRET_ARNS": json.dumps(
+                    [s.secret_arn for s in secrets.values()]
+                ),
+                "KEY_ROTATION_MAX_AGE_DAYS": str(key_rotation_max_age_days),
+            },
+            log_retention=logs.RetentionDays.ONE_MONTH,
+        )
+        for provider_secret in secrets.values():
+            provider_secret.grant_read(key_rotation_checker_fn)
+        key_rotation_checker_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:DescribeSecret"],
+                resources=[s.secret_arn for s in secrets.values()],
+            )
+        )
+        key_rotation_checker_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["cloudwatch:PutMetricData"],
+                resources=["*"],
+            )
+        )
+
+        # Weekly EventBridge rule — every Sunday at 08:00 UTC
+        key_rotation_rule = events.Rule(
+            self,
+            "KeyRotationCheckRule",
+            rule_name=f"{prefix}-key-rotation-check",
+            schedule=events.Schedule.cron(
+                minute="0", hour="8", week_day="SUN", month="*", year="*"
+            ),
+            description="Weekly check that provider API key secrets have been rotated",
+        )
+        key_rotation_rule.add_target(
+            events_targets.LambdaFunction(key_rotation_checker_fn)
+        )
 
         # -----------------------------------------------------------------
         # API Gateway — HTTP backend for AgentCore Gateway
@@ -955,6 +1098,20 @@ class ModelRouterStack(Stack):
             "QuerySpendFunctionName",
             value=query_spend_fn.function_name,
             description="query_spend AgentCore Lambda target — register in AgentCore Gateway",
+        )
+
+        CfnOutput(
+            self,
+            "GuardrailVersionParamName",
+            value=guardrail_version_param.parameter_name,
+            description="SSM parameter controlling active Bedrock Guardrail version",
+        )
+
+        CfnOutput(
+            self,
+            "GuardrailVersionUpdaterFunctionName",
+            value=guardrail_updater_fn.function_name,
+            description="Invoke to update guardrail version without redeploying",
         )
 
         # Convenience: secrets ARNs for populating after deploy
