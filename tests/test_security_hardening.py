@@ -12,12 +12,11 @@ Covers:
 
 import importlib
 import importlib.util
-import io
 import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
