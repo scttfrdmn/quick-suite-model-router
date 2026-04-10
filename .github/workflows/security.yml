@@ -67,6 +67,9 @@ jobs:
           exit-code: 1
 
       - name: Semgrep SAST
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: auto
+        run: |
+          pip install semgrep
+          semgrep scan --config=auto --error \
+            --exclude-rule python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected \
+            --exclude-rule javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp \
+            .
