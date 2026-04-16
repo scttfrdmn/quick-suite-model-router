@@ -272,8 +272,13 @@ first call after a rotation.
 **Single-region deployment.** For high availability across regions, deploy two stacks and
 put Route 53 latency routing in front of both API Gateway endpoints.
 
-**Input limits.** Prompts are capped at 100 KB. Maximum output tokens: 16,384. Router
-timeout: 30 seconds per call.
+**API Gateway ceiling.** The router sits behind API Gateway, which hard-kills connections
+after 29 seconds regardless of the Lambda's own timeout. External provider calls
+(Anthropic, OpenAI, Gemini) are capped at 25 seconds to stay safely inside this window;
+slow provider calls trigger fallback to the next configured provider rather than a silent
+connection drop. Bedrock calls use the SDK default and are typically well under 10s.
+
+**Input limits.** Prompts are capped at 100 KB. Maximum output tokens: 16,384.
 
 ## Documentation
 
