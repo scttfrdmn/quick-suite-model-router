@@ -140,6 +140,19 @@ class TestAnthropicProvider:
             result = p.handler({"prompt": "Hello"}, None)
         assert "error" in result
 
+    def test_urlopen_timeout_is_25s(self):
+        """Regression guard: urlopen must be called with timeout=25 (API GW ceiling is 29s)."""
+        p = self._provider()
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return _http_response(self.API_SUCCESS)
+        with patch.object(p, "_api_key", "sk-test"), \
+             patch.object(p, "apply_guardrail_safe", side_effect=self._no_guardrail), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            p.handler({"prompt": "Hello"}, None)
+        assert captured.get("timeout") == 25
+
     def test_context_prepended_to_prompt(self):
         p = self._provider()
         captured = {}
@@ -265,6 +278,19 @@ class TestOpenAIProvider:
             result = p.handler({"prompt": "Hello"}, None)
         assert "error" in result
 
+    def test_urlopen_timeout_is_25s(self):
+        """Regression guard: urlopen must be called with timeout=25 (API GW ceiling is 29s)."""
+        p = self._provider()
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return _http_response(self.API_SUCCESS)
+        with patch.object(p, "_creds", {"api_key": "sk-test"}), \
+             patch.object(p, "apply_guardrail_safe", side_effect=self._no_guardrail), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            p.handler({"prompt": "Hello"}, None)
+        assert captured.get("timeout") == 25
+
     def test_context_prepended_to_prompt(self):
         p = self._provider()
         captured = {}
@@ -377,6 +403,19 @@ class TestGeminiProvider:
              patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
             result = p.handler({"prompt": "Hello"}, None)
         assert "error" in result
+
+    def test_urlopen_timeout_is_25s(self):
+        """Regression guard: urlopen must be called with timeout=25 (API GW ceiling is 29s)."""
+        p = self._provider()
+        captured = {}
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+            return _http_response(self.API_SUCCESS)
+        with patch.object(p, "_api_key", "goog-key"), \
+             patch.object(p, "apply_guardrail_safe", side_effect=self._no_guardrail), \
+             patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            p.handler({"prompt": "Hello"}, None)
+        assert captured.get("timeout") == 25
 
     def test_context_prepended_to_prompt(self):
         p = self._provider()
