@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Provider HTTP timeout reduced from 110s to 25s** (Anthropic, OpenAI, Gemini providers) — the previous 110s timeout was unreachable: API Gateway hard-kills connections at 29s and the router Lambda has a 30s timeout. The 25s cap ensures slow provider calls trigger the fallback chain cleanly rather than letting API Gateway silently close the connection mid-response.
+
 ## [0.12.0] - 2026-04-07
 
 ### Added

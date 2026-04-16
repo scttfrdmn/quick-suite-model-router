@@ -257,7 +257,7 @@ def _invoke_blocking(payload, headers, model, guardrail_ok):
             headers=headers,
             method="POST",
         )
-        with urllib_request.urlopen(req, timeout=110) as resp:
+        with urllib_request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read())
 
         content = "".join(
@@ -325,7 +325,7 @@ def _invoke_streaming(payload, headers, model, guardrail_ok):
         stop_reason = ""
         msg_id = ""
 
-        with urllib_request.urlopen(req, timeout=110) as resp:
+        with urllib_request.urlopen(req, timeout=25) as resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
                 if not line.startswith("data: "):
